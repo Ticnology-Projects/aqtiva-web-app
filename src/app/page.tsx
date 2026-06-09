@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { InvoiceUploader } from "@/components/InvoiceUploader";
 import { Navbar } from "@/components/layout/Navbar";
-import { uploadAndMatchInvoice } from "@/lib/api";
-import { signOut, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { ExcelUploader } from "@/components/ExcelUploader";
 
@@ -12,7 +11,6 @@ interface InvoiceUploaderProps {
   onUploadSuccess: () => void;
 }
 
-// (Las interfaces se mantienen igual)
 type DashboardRow = {
   factura: string;
   cliente: string;
@@ -37,7 +35,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [selectedRow, setSelectedRow] = useState<DashboardRow | null>(null);
 
-  // Estado para controlar el formulario editable
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // 1. Estado expandido para controlar el formulario editable (OCR + IA)
   const [editForm, setEditForm] = useState({
     numero_documento: "",
     numero_operacion: "",
@@ -45,7 +45,10 @@ export default function DashboardPage() {
     receptor_nombre: "",
     fecha_emision: "",
     importe_total: 0,
-    moneda: ""
+    moneda: "",
+    factura_sugerida: "",
+    nivel_confianza: "",
+    estado: ""
   });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -65,6 +68,26 @@ export default function DashboardPage() {
       });
   };
 
+  const handleSyncKnowledgeBase = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch("/api/bedrock/sync", {
+        method: "POST",
+      });
+      const data = await res.json();
+      
+      if (res.ok) {
+        alert("✅ IA Sincronizada: El agente ya puede leer los últimos documentos subidos.");
+      } else {
+        throw new Error(data.error || "Error al sincronizar");
+      }
+    } catch (error: any) {
+      alert("❌ Ocurrió un error al intentar sincronizar: " + error.message);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/login");
@@ -77,6 +100,7 @@ export default function DashboardPage() {
     }
   }, [status]);
 
+  // 2. Pre-cargar datos del JSON (OCR y Procesado) al abrir el Modal
   useEffect(() => {
     if (selectedRow && selectedRow.extraccionOriginal) {
       const ext = selectedRow.extraccionOriginal;
@@ -87,7 +111,12 @@ export default function DashboardPage() {
         receptor_nombre: ext.receptor?.nombre?.valor || "",
         fecha_emision: ext.fecha_emision?.valor || "",
         importe_total: ext.importe_total?.valor || 0,
-        moneda: ext.moneda?.valor || ""
+        moneda: ext.moneda?.valor || "",
+        
+        // Cargar variables de Bedrock / IA
+        factura_sugerida: selectedRow.factura || "",
+        nivel_confianza: selectedRow.nivelConfianza || "BAJO",
+        estado: selectedRow.estadoIA || "PENDIENTE"
       });
     }
   }, [selectedRow]);
@@ -95,26 +124,27 @@ export default function DashboardPage() {
   if (status === "loading") return <div className="min-h-screen bg-gray-50"></div>;
   if (!session) return null;
 
+  // 3. Guardado apuntando al nuevo endpoint de actualización
   const handleSaveOCR = async () => {
     if (!selectedRow?.s3KeyOutput) return;
     setIsSaving(true);
     try {
-      const res = await fetch("/api/update-ocr", {
+      const res = await fetch("/api/dashboard/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           s3KeyOutput: selectedRow.s3KeyOutput,
-          s3KeyProcessed: selectedRow.s3KeyProcessed, // Enviamos el segundo archivo
+          s3KeyProcessed: selectedRow.s3KeyProcessed,
           updates: editForm
         })
       });
 
       if (res.ok) {
-        alert("Cambios guardados en S3 exitosamente.");
+        alert("✅ Cambios guardados en S3 exitosamente.");
         setSelectedRow(null);
-        window.location.reload(); // Recarga para ver el badge "ALTO" de inmediato
+        refreshDashboardData(); // Recargamos dinámicamente sin parpadear la pantalla
       } else {
-        alert("Ocurrió un error al guardar los cambios.");
+        alert("❌ Ocurrió un error al guardar los cambios.");
       }
     } catch (error) {
       console.error("Error guardando:", error);
@@ -138,15 +168,30 @@ export default function DashboardPage() {
       <div className="p-8 max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold text-gray-800">Panel de Conciliación de Facturas</h1>
+          <button
+            onClick={handleSyncKnowledgeBase}
+            disabled={isSyncing}
+            className="flex items-center justify-center gap-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold py-2 px-4 rounded-lg shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed w-full sm:w-auto"
+          >
+            {isSyncing ? (
+              <svg className="animate-spin h-5 w-5 text-indigo-600 shrink-0" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            ) : (
+              <svg className="w-5 h-5 text-indigo-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            )}
+            <span>{isSyncing ? "Sincronizando IA..." : "Sincronizar IA"}</span>
+          </button>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-          {/* Columna 1: El uploader de PDFs original */}
           <div className="h-full">
             <InvoiceUploader onUploadSuccess={refreshDashboardData} />
           </div>
 
-          {/* Columna 2: El nuevo procesador de Excel a S3 */}
           <div className="h-full">
             <ExcelUploader />
           </div>
@@ -158,7 +203,6 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="overflow-x-auto bg-white rounded-lg shadow border border-gray-200">
-            {/* TABLA PRINCIPAL */}
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
@@ -175,9 +219,10 @@ export default function DashboardPage() {
                   <tr key={idx} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-gray-900">{row.factura}</td>
                     <td className="px-6 py-4 text-gray-700 font-medium">{row.cliente}</td>
-                    <td className="px-6 py-4 text-gray-700 font-mono">S/ {row.monto.toFixed(2)}</td>
+                    {/* Nos aseguramos de que el monto no arroje error si no es un número */}
+                    <td className="px-6 py-4 text-gray-700 font-mono">S/ {Number(row.monto || 0).toFixed(2)}</td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`px-2 py-1 text-xs font-bold rounded ${row.estadoCatalogo === 'COBRADO' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                      <span className={`px-2 py-1 text-xs font-bold rounded whitespace-nowrap ${row.estadoCatalogo === 'COBRADO' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                         {row.estadoCatalogo}
                       </span>
                     </td>
@@ -199,7 +244,6 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* MODAL DE DETALLES Y EDICIÓN */}
         {selectedRow && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col">
@@ -213,17 +257,15 @@ export default function DashboardPage() {
               </div>
 
               <div className="p-6 space-y-6 overflow-y-auto grow">
-                {/* Bloque de IA (Solo lectura) */}
                 <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
                   <h3 className="font-bold text-blue-900 mb-2 flex items-center gap-2">🤖 Razonamiento de la IA</h3>
                   <p className="text-sm text-blue-800 leading-relaxed text-justify">{selectedRow.justificacion}</p>
                 </div>
 
-                {/* FORMULARIO EDITABLE DEL OCR */}
                 {selectedRow.extraccionOriginal && (
                   <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
                     <h3 className="font-bold text-gray-800 mb-4 border-b pb-2 flex items-center gap-2">
-                      ✏️ Corrección Manual de OCR
+                      ✏️ Corrección Manual de OCR y Conciliación
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
@@ -260,6 +302,48 @@ export default function DashboardPage() {
                         <div className="flex flex-col w-2/3">
                           <label className="text-xs font-semibold text-gray-600 mb-1">Monto Total</label>
                           <input type="number" step="0.01" value={editForm.importe_total} onChange={e => setEditForm({ ...editForm, importe_total: parseFloat(e.target.value) })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
+                        </div>
+                      </div>
+
+                      {/* 4. SECCIÓN AÑADIDA PARA EDITAR LOS CAMPOS DE LA IA */}
+                      <div className="col-span-1 md:col-span-2 mt-4 pt-4 border-t border-gray-100">
+                        <h4 className="text-xs font-bold text-indigo-700 mb-3 uppercase tracking-wide">Ajustes de IA (Bedrock Processed)</h4>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-indigo-900 mb-1">Factura Sugerida</label>
+                            <input 
+                              type="text" 
+                              value={editForm.factura_sugerida} 
+                              onChange={e => setEditForm({ ...editForm, factura_sugerida: e.target.value })} 
+                              className="border border-indigo-200 rounded p-2 text-sm focus:ring focus:ring-indigo-300 focus:border-indigo-500 outline-none uppercase bg-white" 
+                            />
+                          </div>
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-indigo-900 mb-1">Nivel Confianza</label>
+                            <select 
+                              value={editForm.nivel_confianza} 
+                              onChange={e => setEditForm({ ...editForm, nivel_confianza: e.target.value })} 
+                              className="border border-indigo-200 rounded p-2 text-sm focus:ring focus:ring-indigo-300 focus:border-indigo-500 outline-none bg-white"
+                            >
+                              <option value="ALTO">ALTO</option>
+                              <option value="MEDIO">MEDIO</option>
+                              <option value="BAJO">BAJO</option>
+                              <option value="SIN_MATCH">SIN_MATCH</option>
+                            </select>
+                          </div>
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-indigo-900 mb-1">Estado Final</label>
+                            <select 
+                              value={editForm.estado} 
+                              onChange={e => setEditForm({ ...editForm, estado: e.target.value })} 
+                              className="border border-indigo-200 rounded p-2 text-sm focus:ring focus:ring-indigo-300 focus:border-indigo-500 outline-none bg-white"
+                            >
+                              <option value="COBRADO">COBRADO</option>
+                              <option value="EN REVISIÓN">EN REVISIÓN</option>
+                              <option value="EN COBRANZA">EN COBRANZA</option>
+                              <option value="PENDIENTE">PENDIENTE</option>
+                            </select>
+                          </div>
                         </div>
                       </div>
 

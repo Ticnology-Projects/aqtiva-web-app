@@ -97,7 +97,7 @@ export function ExcelUploader() {
 
         // 3. Extraemos y limpiamos los nombres de los encabezados (quitamos saltos de línea)
         const headers = (rawData[headerRowIndex] as any[]).map((header, index) => 
-          header ? String(header).replace(/\n/g, " ").trim() : `COLUMNA_VACIA_${index}`
+          header ? String(header).replace(/[\r\n]+/g, " ").trim() : `COLUMNA_VACIA_${index}`
         );
 
         // 4. Mapeamos las verdaderas filas de datos usando nuestros encabezados limpios

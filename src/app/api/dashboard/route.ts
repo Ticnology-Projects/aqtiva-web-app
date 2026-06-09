@@ -65,7 +65,10 @@ export async function GET() {
       return {
         factura: doc.id,
         cliente: doc.clienteOriginal,
-        monto: doc.montoOriginal,
+        // 1. Busca el monto exacto del voucher (OCR)
+        // 2. Si no hay voucher, busca el monto de la factura sugerida por la IA
+        // 3. Si no hay IA, toma el del catálogo original, o 0 por defecto.
+        monto: extraccionOCR?.importe_total?.valor || conciliacion?.factura_sugerida?.monto_total || doc.montoOriginal || 0,
         estadoCatalogo: doc.estadoOriginal,
         nivelConfianza: conciliacion ? conciliacion.nivel_confianza : "SIN_MATCH",
         estadoIA: conciliacion && conciliacion.factura_sugerida ? conciliacion.factura_sugerida.estado : "PENDIENTE",

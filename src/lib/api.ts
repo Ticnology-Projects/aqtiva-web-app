@@ -1,6 +1,6 @@
 
 
-const API_BASE_URL = "https://hdgl8g88ae.execute-api.us-east-1.amazonaws.com";
+const API_BASE_URL = process.env.API_BASE_URL!
 
 const sleep = (ms: number): Promise<void> => {
   return new Promise((resolve) => setTimeout(resolve, ms));

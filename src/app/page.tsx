@@ -25,6 +25,7 @@ type DashboardRow = {
   extraccionOriginal: any;
   s3KeyOutput: string | null;
   s3KeyProcessed: string | null;
+  markdownOriginal: string; // NUEVO CAMPO
 };
 
 export default function DashboardPage() {
@@ -36,21 +37,29 @@ export default function DashboardPage() {
   const [selectedRow, setSelectedRow] = useState<DashboardRow | null>(null);
 
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isRematching, setIsRematching] = useState(false);
 
-  // 1. Estado expandido para controlar el formulario editable (OCR + IA)
+  const [activeTab, setActiveTab] = useState<"ocr" | "ia">("ocr");
+
   const [editForm, setEditForm] = useState({
     numero_documento: "",
     numero_operacion: "",
     emisor_nombre: "",
+    emisor_ruc: "",
     receptor_nombre: "",
+    receptor_ruc: "",
     fecha_emision: "",
     importe_total: 0,
+    subtotal: 0,
+    igv: 0,
     moneda: "",
     factura_sugerida: "",
     nivel_confianza: "",
-    estado: ""
+    estado: "",
+    justificacion: "",
+    score_kb: 0
   });
-  const [isSaving, setIsSaving] = useState(false);
 
   const refreshDashboardData = () => {
     setLoading(true);
@@ -71,11 +80,8 @@ export default function DashboardPage() {
   const handleSyncKnowledgeBase = async () => {
     setIsSyncing(true);
     try {
-      const res = await fetch("/api/bedrock/sync", {
-        method: "POST",
-      });
+      const res = await fetch("/api/bedrock/sync", { method: "POST" });
       const data = await res.json();
-      
       if (res.ok) {
         alert("✅ IA Sincronizada: El agente ya puede leer los últimos documentos subidos.");
       } else {
@@ -100,23 +106,29 @@ export default function DashboardPage() {
     }
   }, [status]);
 
-  // 2. Pre-cargar datos del JSON (OCR y Procesado) al abrir el Modal
   useEffect(() => {
     if (selectedRow && selectedRow.extraccionOriginal) {
+      setActiveTab("ocr");
+
       const ext = selectedRow.extraccionOriginal;
       setEditForm({
         numero_documento: ext.numero_documento?.valor || "",
         numero_operacion: ext.numero_operacion?.valor || "",
         emisor_nombre: ext.emisor?.nombre?.valor || "",
+        emisor_ruc: ext.emisor?.ruc?.valor || "",
         receptor_nombre: ext.receptor?.nombre?.valor || "",
+        receptor_ruc: ext.receptor?.ruc?.valor || "",
         fecha_emision: ext.fecha_emision?.valor || "",
         importe_total: ext.importe_total?.valor || 0,
+        subtotal: ext.totales?.subtotal?.valor || 0,
+        igv: ext.totales?.igv?.valor || 0,
         moneda: ext.moneda?.valor || "",
         
-        // Cargar variables de Bedrock / IA
         factura_sugerida: selectedRow.factura || "",
         nivel_confianza: selectedRow.nivelConfianza || "BAJO",
-        estado: selectedRow.estadoIA || "PENDIENTE"
+        estado: selectedRow.estadoIA || "PENDIENTE",
+        justificacion: selectedRow.justificacion || "",
+        score_kb: selectedRow.score || 0
       });
     }
   }, [selectedRow]);
@@ -124,7 +136,6 @@ export default function DashboardPage() {
   if (status === "loading") return <div className="min-h-screen bg-gray-50"></div>;
   if (!session) return null;
 
-  // 3. Guardado apuntando al nuevo endpoint de actualización
   const handleSaveOCR = async () => {
     if (!selectedRow?.s3KeyOutput) return;
     setIsSaving(true);
@@ -142,7 +153,7 @@ export default function DashboardPage() {
       if (res.ok) {
         alert("✅ Cambios guardados en S3 exitosamente.");
         setSelectedRow(null);
-        refreshDashboardData(); // Recargamos dinámicamente sin parpadear la pantalla
+        refreshDashboardData();
       } else {
         alert("❌ Ocurrió un error al guardar los cambios.");
       }
@@ -150,6 +161,47 @@ export default function DashboardPage() {
       console.error("Error guardando:", error);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleRematchIA = async () => {
+    if (!selectedRow?.s3KeyOutput) return;
+    setIsSaving(true);
+    try {
+      const saveRes = await fetch("/api/dashboard/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          s3KeyOutput: selectedRow.s3KeyOutput,
+          s3KeyProcessed: selectedRow.s3KeyProcessed,
+          updates: editForm
+        })
+      });
+      if (!saveRes.ok) throw new Error("Fallo al guardar OCR pre-match");
+    } catch (error) {
+      alert("❌ No se pudieron guardar los datos antes de re-evaluar.");
+      setIsSaving(false);
+      return;
+    }
+    setIsSaving(false);
+
+    setIsRematching(true);
+    try {
+      const matchRes = await fetch("/api/dashboard/rematch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ s3KeyOutput: selectedRow.s3KeyOutput })
+      });
+
+      if (!matchRes.ok) throw new Error("Error en el motor de IA");
+
+      alert("✅ ¡Éxito! La IA ha re-evaluado la factura con los datos corregidos.");
+      setSelectedRow(null);
+      refreshDashboardData();
+    } catch (error) {
+      alert("❌ Error al intentar re-evaluar con la IA.");
+    } finally {
+      setIsRematching(false);
     }
   };
 
@@ -166,7 +218,8 @@ export default function DashboardPage() {
     <div className="bg-gray-50 min-h-screen pb-12">
       <Navbar />
       <div className="p-8 max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-6">
+        {/* Cabecera Principal */}
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
           <h1 className="text-3xl font-bold text-gray-800">Panel de Conciliación de Facturas</h1>
           <button
             onClick={handleSyncKnowledgeBase}
@@ -191,15 +244,15 @@ export default function DashboardPage() {
           <div className="h-full">
             <InvoiceUploader onUploadSuccess={refreshDashboardData} />
           </div>
-
           <div className="h-full">
             <ExcelUploader />
           </div>
         </div>
 
+        {/* Tabla Principal */}
         {loading ? (
           <div className="flex justify-center items-center h-64">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
           </div>
         ) : (
           <div className="overflow-x-auto bg-white rounded-lg shadow border border-gray-200">
@@ -219,10 +272,13 @@ export default function DashboardPage() {
                   <tr key={idx} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-gray-900">{row.factura}</td>
                     <td className="px-6 py-4 text-gray-700 font-medium">{row.cliente}</td>
-                    {/* Nos aseguramos de que el monto no arroje error si no es un número */}
                     <td className="px-6 py-4 text-gray-700 font-mono">S/ {Number(row.monto || 0).toFixed(2)}</td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`px-2 py-1 text-xs font-bold rounded whitespace-nowrap ${row.estadoCatalogo === 'COBRADO' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                      <span className={`px-2 py-1 text-xs font-bold rounded whitespace-nowrap ${
+                        row.estadoCatalogo === 'COBRADO' ? 'bg-green-50 text-green-700' : 
+                        row.estadoCatalogo === 'EN REVISIÓN' ? 'bg-yellow-50 text-yellow-700' : 
+                        'bg-red-50 text-red-700'
+                      }`}>
                         {row.estadoCatalogo}
                       </span>
                     </td>
@@ -244,6 +300,7 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Modal Interactivo de Edición / Lectura */}
         {selectedRow && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col">
@@ -251,119 +308,200 @@ export default function DashboardPage() {
               <div className="flex justify-between items-center p-6 border-b shrink-0">
                 <div>
                   <h2 className="text-2xl font-bold text-gray-800">Auditoría: {selectedRow.factura}</h2>
-                  {selectedRow.s3KeyOutput && <span className="text-xs text-gray-500 font-mono mt-1 block">Origen: {selectedRow.s3KeyOutput}</span>}
+                  {selectedRow.s3KeyOutput ? (
+                    <span className="text-xs text-gray-500 font-mono mt-1 block">Modificando archivos JSON directamente en S3</span>
+                  ) : (
+                    <span className="text-xs text-gray-500 font-mono mt-1 block">Mostrando catálogo en bruto (Markdown)</span>
+                  )}
                 </div>
                 <button onClick={() => setSelectedRow(null)} className="text-gray-400 hover:text-gray-600 text-2xl font-bold px-2">&times;</button>
               </div>
 
-              <div className="p-6 space-y-6 overflow-y-auto grow">
-                <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
-                  <h3 className="font-bold text-blue-900 mb-2 flex items-center gap-2">🤖 Razonamiento de la IA</h3>
-                  <p className="text-sm text-blue-800 leading-relaxed text-justify">{selectedRow.justificacion}</p>
-                </div>
-
-                {selectedRow.extraccionOriginal && (
+              {/* LÓGICA CONDICIONAL: SI NO HAY VOUCHER, MOSTRAR MARKDOWN */}
+              {!selectedRow.s3KeyOutput && !selectedRow.s3KeyProcessed ? (
+                <div className="p-6 overflow-y-auto grow bg-gray-50">
+                  <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 flex items-start gap-3">
+                    <span className="text-xl">ℹ️</span>
+                    <div>
+                      <h3 className="font-bold">Factura sin conciliar</h3>
+                      <p className="text-sm">Aún no se ha subido ningún voucher para esta factura. A continuación se muestran los datos extraídos del catálogo original.</p>
+                    </div>
+                  </div>
                   <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
-                    <h3 className="font-bold text-gray-800 mb-4 border-b pb-2 flex items-center gap-2">
-                      ✏️ Corrección Manual de OCR y Conciliación
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <h3 className="text-xs font-bold text-gray-500 mb-3 uppercase tracking-wider">Contenido Original (Catálogo)</h3>
+                    <pre className="font-mono text-xs text-gray-700 whitespace-pre-wrap bg-gray-50 p-4 rounded border">
+                      {selectedRow.markdownOriginal || "No se pudo cargar el archivo original."}
+                    </pre>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* NAVEGACIÓN DE PESTAÑAS (TABS) */}
+                  <div className="flex border-b border-gray-200 px-6 pt-2 shrink-0 bg-gray-50">
+                    <button
+                      onClick={() => setActiveTab("ocr")}
+                      className={`py-3 px-6 text-sm font-bold focus:outline-none transition-colors border-b-2 ${
+                        activeTab === "ocr" ? "border-indigo-600 text-indigo-700 bg-white rounded-t-lg" : "border-transparent text-gray-500 hover:text-gray-700"
+                      }`}
+                    >
+                      📄 Factura Extraída (Textract)
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("ia")}
+                      className={`py-3 px-6 text-sm font-bold focus:outline-none transition-colors border-b-2 ${
+                        activeTab === "ia" ? "border-indigo-600 text-indigo-700 bg-white rounded-t-lg" : "border-transparent text-gray-500 hover:text-gray-700"
+                      }`}
+                    >
+                      🤖 Factura Procesada (Bedrock)
+                    </button>
+                  </div>
 
-                      <div className="flex flex-col">
-                        <label className="text-xs font-semibold text-gray-600 mb-1">Número Documento</label>
-                        <input type="text" value={editForm.numero_documento} onChange={e => setEditForm({ ...editForm, numero_documento: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
-                      </div>
-
-                      <div className="flex flex-col">
-                        <label className="text-xs font-semibold text-gray-600 mb-1">Número Operación (Vouchers)</label>
-                        <input type="text" value={editForm.numero_operacion} onChange={e => setEditForm({ ...editForm, numero_operacion: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
-                      </div>
-
-                      <div className="flex flex-col">
-                        <label className="text-xs font-semibold text-gray-600 mb-1">Nombre Emisor (Origen/Ordenante)</label>
-                        <input type="text" value={editForm.emisor_nombre} onChange={e => setEditForm({ ...editForm, emisor_nombre: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
-                      </div>
-
-                      <div className="flex flex-col">
-                        <label className="text-xs font-semibold text-gray-600 mb-1">Nombre Receptor (Destino)</label>
-                        <input type="text" value={editForm.receptor_nombre} onChange={e => setEditForm({ ...editForm, receptor_nombre: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
-                      </div>
-
-                      <div className="flex flex-col">
-                        <label className="text-xs font-semibold text-gray-600 mb-1">Fecha Emisión (DD/MM/AAAA)</label>
-                        <input type="text" value={editForm.fecha_emision} onChange={e => setEditForm({ ...editForm, fecha_emision: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
-                      </div>
-
-                      <div className="flex gap-4">
-                        <div className="flex flex-col w-1/3">
-                          <label className="text-xs font-semibold text-gray-600 mb-1">Moneda</label>
-                          <input type="text" value={editForm.moneda} onChange={e => setEditForm({ ...editForm, moneda: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none uppercase" />
-                        </div>
-                        <div className="flex flex-col w-2/3">
-                          <label className="text-xs font-semibold text-gray-600 mb-1">Monto Total</label>
-                          <input type="number" step="0.01" value={editForm.importe_total} onChange={e => setEditForm({ ...editForm, importe_total: parseFloat(e.target.value) })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 focus:border-indigo-400 outline-none" />
-                        </div>
-                      </div>
-
-                      {/* 4. SECCIÓN AÑADIDA PARA EDITAR LOS CAMPOS DE LA IA */}
-                      <div className="col-span-1 md:col-span-2 mt-4 pt-4 border-t border-gray-100">
-                        <h4 className="text-xs font-bold text-indigo-700 mb-3 uppercase tracking-wide">Ajustes de IA (Bedrock Processed)</h4>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                  {/* ÁREA DE CONTENIDO SCROLLEABLE (FORMULARIOS) */}
+                  <div className="p-6 space-y-6 overflow-y-auto grow bg-white">
+                    {/* --- TAB 1: DATOS OCR --- */}
+                    {activeTab === "ocr" && (
+                      <div className="space-y-4 animate-fadeIn">
+                        <p className="text-xs text-gray-500 mb-4 uppercase tracking-wider font-semibold">Datos leídos físicamente del voucher (output)</p>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="flex flex-col">
-                            <label className="text-xs font-semibold text-indigo-900 mb-1">Factura Sugerida</label>
-                            <input 
-                              type="text" 
-                              value={editForm.factura_sugerida} 
-                              onChange={e => setEditForm({ ...editForm, factura_sugerida: e.target.value })} 
-                              className="border border-indigo-200 rounded p-2 text-sm focus:ring focus:ring-indigo-300 focus:border-indigo-500 outline-none uppercase bg-white" 
-                            />
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Número Documento</label>
+                            <input type="text" value={editForm.numero_documento} onChange={e => setEditForm({ ...editForm, numero_documento: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
                           </div>
                           <div className="flex flex-col">
-                            <label className="text-xs font-semibold text-indigo-900 mb-1">Nivel Confianza</label>
-                            <select 
-                              value={editForm.nivel_confianza} 
-                              onChange={e => setEditForm({ ...editForm, nivel_confianza: e.target.value })} 
-                              className="border border-indigo-200 rounded p-2 text-sm focus:ring focus:ring-indigo-300 focus:border-indigo-500 outline-none bg-white"
-                            >
-                              <option value="ALTO">ALTO</option>
-                              <option value="MEDIO">MEDIO</option>
-                              <option value="BAJO">BAJO</option>
-                              <option value="SIN_MATCH">SIN_MATCH</option>
-                            </select>
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Número Operación</label>
+                            <input type="text" value={editForm.numero_operacion} onChange={e => setEditForm({ ...editForm, numero_operacion: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
+                          </div>
+
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Emisor (Nombre)</label>
+                            <input type="text" value={editForm.emisor_nombre} onChange={e => setEditForm({ ...editForm, emisor_nombre: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
                           </div>
                           <div className="flex flex-col">
-                            <label className="text-xs font-semibold text-indigo-900 mb-1">Estado Final</label>
-                            <select 
-                              value={editForm.estado} 
-                              onChange={e => setEditForm({ ...editForm, estado: e.target.value })} 
-                              className="border border-indigo-200 rounded p-2 text-sm focus:ring focus:ring-indigo-300 focus:border-indigo-500 outline-none bg-white"
-                            >
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Emisor (RUC)</label>
+                            <input type="text" value={editForm.emisor_ruc} onChange={e => setEditForm({ ...editForm, emisor_ruc: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
+                          </div>
+
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Receptor (Nombre)</label>
+                            <input type="text" value={editForm.receptor_nombre} onChange={e => setEditForm({ ...editForm, receptor_nombre: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
+                          </div>
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Receptor (RUC)</label>
+                            <input type="text" value={editForm.receptor_ruc} onChange={e => setEditForm({ ...editForm, receptor_ruc: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
+                          </div>
+
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Fecha Emisión</label>
+                            <input type="text" value={editForm.fecha_emision} onChange={e => setEditForm({ ...editForm, fecha_emision: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none" />
+                          </div>
+
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Moneda</label>
+                            <input type="text" value={editForm.moneda} onChange={e => setEditForm({ ...editForm, moneda: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none uppercase" />
+                          </div>
+
+                          <div className="flex gap-4 col-span-1 md:col-span-2 mt-2 bg-gray-50 p-4 rounded-lg border border-gray-100">
+                            <div className="flex flex-col w-1/3">
+                              <label className="text-xs font-semibold text-gray-600 mb-1">Subtotal</label>
+                              <input type="number" step="0.01" value={editForm.subtotal} onChange={e => setEditForm({ ...editForm, subtotal: parseFloat(e.target.value) })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none bg-white" />
+                            </div>
+                            <div className="flex flex-col w-1/3">
+                              <label className="text-xs font-semibold text-gray-600 mb-1">IGV</label>
+                              <input type="number" step="0.01" value={editForm.igv} onChange={e => setEditForm({ ...editForm, igv: parseFloat(e.target.value) })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none bg-white" />
+                            </div>
+                            <div className="flex flex-col w-1/3">
+                              <label className="text-xs font-bold text-indigo-900 mb-1">Monto Total</label>
+                              <input type="number" step="0.01" value={editForm.importe_total} onChange={e => setEditForm({ ...editForm, importe_total: parseFloat(e.target.value) })} className="border border-indigo-300 bg-indigo-50 rounded p-2 text-sm font-bold focus:ring focus:ring-indigo-200 outline-none text-indigo-900" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* --- TAB 2: DATOS IA --- */}
+                    {activeTab === "ia" && (
+                      <div className="space-y-4 animate-fadeIn">
+                        <p className="text-xs text-indigo-500 mb-4 uppercase tracking-wider font-semibold">Análisis y cruce de datos por Amazon Bedrock (processed)</p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Factura Sugerida (Match)</label>
+                            <input type="text" value={editForm.factura_sugerida} onChange={e => setEditForm({ ...editForm, factura_sugerida: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none uppercase" />
+                          </div>
+                          
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Estado Final Decidido</label>
+                            <select value={editForm.estado} onChange={e => setEditForm({ ...editForm, estado: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none">
                               <option value="COBRADO">COBRADO</option>
                               <option value="EN REVISIÓN">EN REVISIÓN</option>
                               <option value="EN COBRANZA">EN COBRANZA</option>
                               <option value="PENDIENTE">PENDIENTE</option>
                             </select>
                           </div>
+
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Nivel Confianza (IA)</label>
+                            <select value={editForm.nivel_confianza} onChange={e => setEditForm({ ...editForm, nivel_confianza: e.target.value })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none">
+                              <option value="ALTO">ALTO</option>
+                              <option value="MEDIO">MEDIO</option>
+                              <option value="BAJO">BAJO</option>
+                              <option value="SIN_MATCH">SIN_MATCH</option>
+                            </select>
+                          </div>
+
+                          <div className="flex flex-col">
+                            <label className="text-xs font-semibold text-gray-600 mb-1">Score Vectorial (Knowledge Base)</label>
+                            <input type="number" step="0.001" value={editForm.score_kb} onChange={e => setEditForm({ ...editForm, score_kb: parseFloat(e.target.value) })} className="border rounded p-2 text-sm focus:ring focus:ring-indigo-100 outline-none bg-gray-50 text-gray-500" />
+                          </div>
+
+                          <div className="flex flex-col col-span-1 md:col-span-2 mt-2">
+                            <label className="text-xs font-bold text-gray-800 mb-2 flex items-center gap-2">
+                              🤖 Justificación del Sistema
+                            </label>
+                            <textarea 
+                              rows={4}
+                              value={editForm.justificacion} 
+                              onChange={e => setEditForm({ ...editForm, justificacion: e.target.value })} 
+                              className="border border-indigo-200 bg-indigo-50/30 rounded-lg p-3 text-sm w-full outline-none resize-none leading-relaxed text-gray-700"
+                            />
+                          </div>
                         </div>
                       </div>
+                    )}
+                  </div>
+                </>
+              )}
 
-                    </div>
+              {/* Botonera de Guardado Condicional */}
+              <div className="p-6 border-t bg-gray-50 rounded-b-xl flex justify-between shrink-0">
+                <button onClick={() => setSelectedRow(null)} className="text-gray-600 hover:text-gray-900 px-4 py-2 font-medium">
+                  {(!selectedRow.s3KeyOutput && !selectedRow.s3KeyProcessed) ? "Cerrar" : "Cancelar"}
+                </button>
+                
+                {/* Solo mostramos las acciones si hay archivos que modificar */}
+                {(selectedRow.s3KeyOutput || selectedRow.s3KeyProcessed) && (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleRematchIA}
+                      disabled={isSaving || isRematching}
+                      className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-4 py-2 rounded-lg font-medium shadow-sm transition-colors disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {isRematching ? (
+                        <><svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Evaluando...</>
+                      ) : "✨ Re-evaluar con IA"}
+                    </button>
+                    <button
+                      onClick={handleSaveOCR}
+                      disabled={isSaving || isRematching}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium shadow-md transition-colors disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {isSaving ? "Guardando..." : "Guardar Cambios"}
+                    </button>
                   </div>
                 )}
               </div>
 
-              <div className="p-6 border-t bg-gray-50 rounded-b-xl flex justify-between shrink-0">
-                <button onClick={() => setSelectedRow(null)} className="text-gray-600 hover:text-gray-900 px-4 py-2 font-medium">
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleSaveOCR}
-                  disabled={isSaving}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium shadow-md transition-colors disabled:opacity-50"
-                >
-                  {isSaving ? "Guardando en S3..." : "Guardar Cambios"}
-                </button>
-              </div>
             </div>
           </div>
         )}

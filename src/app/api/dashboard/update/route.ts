@@ -2,6 +2,15 @@ import { NextResponse } from "next/server";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { s3Client } from "@/lib/s3";
 
+const updateOcrField = (parentObj: any, key: string, newValue: any) => {
+  if (!parentObj[key]) {
+    parentObj[key] = { valor: newValue, valido: true };
+  } else {
+    parentObj[key].valor = newValue;
+    parentObj[key].valido = true; // Si lo edita un humano, lo damos por válido
+  }
+};
+
 export async function POST(req: Request) {
   try {
     const { s3KeyOutput, s3KeyProcessed, updates } = await req.json();
@@ -13,13 +22,37 @@ export async function POST(req: Request) {
       const outText = await outRes.Body!.transformToString("utf-8");
       const outJson = JSON.parse(outText);
 
-      // Inyectamos los nuevos valores editados
       if (outJson.extraccion) {
-        if (outJson.extraccion.importe_total) outJson.extraccion.importe_total.valor = Number(updates.importe_total);
-        if (outJson.extraccion.emisor?.nombre) outJson.extraccion.emisor.nombre.valor = updates.emisor_nombre;
-        if (outJson.extraccion.receptor?.nombre) outJson.extraccion.receptor.nombre.valor = updates.receptor_nombre;
-        if (outJson.extraccion.fecha_emision) outJson.extraccion.fecha_emision.valor = updates.fecha_emision;
-        if (outJson.extraccion.numero_operacion) outJson.extraccion.numero_operacion.valor = updates.numero_operacion;
+        const ext = outJson.extraccion;
+
+        // Actualizamos los campos estándar
+        updateOcrField(ext, 'importe_total', Number(updates.importe_total));
+        updateOcrField(ext, 'fecha_emision', updates.fecha_emision);
+        updateOcrField(ext, 'numero_operacion', updates.numero_operacion);
+
+        // Subtotal e IGV (Anidados)
+        if (!ext.totales) ext.totales = {};
+        updateOcrField(ext.totales, 'subtotal', Number(updates.subtotal));
+        updateOcrField(ext.totales, 'igv', Number(updates.igv));
+
+        // Emisor (Nombre y RUC)
+        if (!ext.emisor) ext.emisor = {};
+        updateOcrField(ext.emisor, 'nombre', updates.emisor_nombre);
+        updateOcrField(ext.emisor, 'ruc', updates.emisor_ruc);
+
+        // Receptor (Nombre y RUC)
+        if (!ext.receptor) ext.receptor = {};
+        updateOcrField(ext.receptor, 'nombre', updates.receptor_nombre);
+        updateOcrField(ext.receptor, 'ruc', updates.receptor_ruc);
+
+        // Actualizamos los objetos anidados de forma segura
+        if (!ext.emisor) ext.emisor = { nombre: { valor: "", valido: true } };
+        if (!ext.emisor.nombre) ext.emisor.nombre = { valor: "", valido: true };
+        ext.emisor.nombre.valor = updates.emisor_nombre;
+
+        if (!ext.receptor) ext.receptor = { nombre: { valor: "", valido: true } };
+        if (!ext.receptor.nombre) ext.receptor.nombre = { valor: "", valido: true };
+        ext.receptor.nombre.valor = updates.receptor_nombre;
       }
 
       await s3Client.send(new PutObjectCommand({
@@ -36,13 +69,14 @@ export async function POST(req: Request) {
       const procText = await procRes.Body!.transformToString("utf-8");
       const procJson = JSON.parse(procText);
 
-      // Inyectamos los nuevos valores de conciliación
       if (procJson.conciliacion) {
         procJson.conciliacion.nivel_confianza = updates.nivel_confianza;
-        if (procJson.conciliacion.factura_sugerida) {
-          procJson.conciliacion.factura_sugerida.numero_documento = updates.factura_sugerida;
-          procJson.conciliacion.factura_sugerida.estado = updates.estado;
-        }
+        procJson.conciliacion.justificacion = updates.justificacion; // Editamos el razonamiento
+        procJson.conciliacion.score_kb = Number(updates.score_kb);   // Editamos el score
+        
+        if (!procJson.conciliacion.factura_sugerida) procJson.conciliacion.factura_sugerida = {};
+        procJson.conciliacion.factura_sugerida.numero_documento = updates.factura_sugerida;
+        procJson.conciliacion.factura_sugerida.estado = updates.estado;
       }
 
       await s3Client.send(new PutObjectCommand({

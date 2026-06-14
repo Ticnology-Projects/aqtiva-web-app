@@ -20,28 +20,15 @@ export async function GET() {
       
       const docMatch = mdContent.match(/\*\*(?:NÃºmero|Número)\s+Documento:\*\*\s+([A-Z0-9-]+)/i);
       const clienteMatch = mdContent.match(/\*\*Cliente:\*\*\s+(.+)/i);
-      const estadoMatch = mdContent.match(/\*\*Estado:\*\*\s+(.+)/i);
-      
-      // Intentar extraer montos
       const montoMatch = mdContent.match(/\*\*Monto Total:\*\*\s+([\d.]+)/i);
-      const subtotalMatch = mdContent.match(/\*\*Subtotal:\*\*\s+([\d.]+)/i);
-      const igvMatch = mdContent.match(/\*\*(?:IGV|I\.G\.V).*?:\*\*\s+([\d.]+)/i);
-
-      // CÁLCULO DE RESPALDO: Si Monto Total está vacío, suma Subtotal + IGV
-      let montoCalculado = montoMatch ? parseFloat(montoMatch[1]) : 0;
-      if (!montoCalculado || isNaN(montoCalculado)) {
-        const sub = subtotalMatch ? parseFloat(subtotalMatch[1]) : 0;
-        const igv = igvMatch ? parseFloat(igvMatch[1]) : 0;
-        montoCalculado = sub + igv;
-      }
+      const estadoMatch = mdContent.match(/\*\*Estado:\*\*\s+([A-Z]+)/i);
 
       return {
         id: docMatch ? docMatch[1] : key,
         clienteOriginal: clienteMatch ? clienteMatch[1].trim() : "Desconocido",
-        montoOriginal: montoCalculado,
+        montoOriginal: montoMatch ? parseFloat(montoMatch[1]) : 0,
         estadoOriginal: estadoMatch ? estadoMatch[1].trim() : "DESCONOCIDO",
-        mdKey: key,
-        mdContent: mdContent // Pasamos el Markdown completo al frontend
+        mdKey: key
       };
     });
 
@@ -55,13 +42,15 @@ export async function GET() {
       let extraccionOCR = null;
 
       if (matchedJsonKey) {
+        // 1. Leer el archivo de la IA (processed/)
         const jsonResponse = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET_NAME, Key: matchedJsonKey }));
         const jsonContent = await jsonResponse.Body!.transformToString("utf-8");
         const parsedJson = JSON.parse(jsonContent);
         
         conciliacion = parsedJson.conciliacion;
-        s3KeyOutput = parsedJson.s3_key;
+        s3KeyOutput = parsedJson.s3_key; // ej: "output/factura_crazy_llama_...json"
 
+        // 2. Usar el s3_key para leer el comprobante original (output/)
         if (s3KeyOutput) {
           try {
             const outputResponse = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET_NAME, Key: s3KeyOutput }));
@@ -73,32 +62,20 @@ export async function GET() {
         }
       }
 
-      let estadoFinalCatalogo = doc.estadoOriginal;
-
-      if (conciliacion && conciliacion.nivel_confianza !== "SIN_MATCH") {
-        let estadoSugerido = conciliacion.factura_sugerida?.estado;
-        if (!estadoSugerido || estadoSugerido === "EN COBRANZA" || estadoSugerido === "PENDIENTE") {
-          if (conciliacion.nivel_confianza === "ALTO") estadoSugerido = "COBRADO";
-          else if (conciliacion.nivel_confianza === "MEDIO") estadoSugerido = "EN REVISIÓN";
-        }
-        estadoFinalCatalogo = estadoSugerido;
-      }
-
       return {
         factura: doc.id,
         cliente: doc.clienteOriginal,
-        monto: extraccionOCR?.importe_total?.valor || conciliacion?.factura_sugerida?.monto_total || doc.montoOriginal || 0,
-        estadoCatalogo: estadoFinalCatalogo,
+        monto: doc.montoOriginal,
+        estadoCatalogo: doc.estadoOriginal,
         nivelConfianza: conciliacion ? conciliacion.nivel_confianza : "SIN_MATCH",
-        estadoIA: estadoFinalCatalogo,
+        estadoIA: conciliacion && conciliacion.factura_sugerida ? conciliacion.factura_sugerida.estado : "PENDIENTE",
         justificacion: conciliacion ? conciliacion.justificacion : "No se encontró voucher procesado para este documento.",
         score: conciliacion ? conciliacion.score_kb : 0,
         camposCoincidentes: conciliacion?.campos_coincidentes || [],
         camposDiscrepantes: conciliacion?.campos_discrepantes || [],
         extraccionOriginal: extraccionOCR,
         s3KeyOutput: s3KeyOutput,
-        s3KeyProcessed: matchedJsonKey || null,
-        markdownOriginal: doc.mdContent // Enviamos el string al Dashboard
+        s3KeyProcessed: matchedJsonKey || null
       };
     }));
 

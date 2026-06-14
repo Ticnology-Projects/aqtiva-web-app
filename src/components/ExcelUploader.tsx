@@ -1,241 +1,182 @@
 "use client";
 
+import { useState, useCallback, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
-import { useState, useRef } from "react";
+import { useSession } from "next-auth/react";
 
 export function ExcelUploader() {
-  const [file, setFile] = useState<File | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const { data: session } = useSession();
   
+  const [empresas, setEmpresas] = useState<any[]>([]);
+  const [selectedEmpresa, setSelectedEmpresa] = useState<string>("");
+  const [isLoadingEmpresas, setIsLoadingEmpresas] = useState(true);
+
+  const [isUploading, setIsUploading] = useState(false);
+  const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
+  
+  // Estados para Drag & Drop
+  const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // --- Manejadores de Drag & Drop ---
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+  // 1. Cargar las empresas del usuario al inicio
+  useEffect(() => {
+    fetch("/api/empresas")
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          // Si el backend ya filtra por usuario, tomamos la data
+          setEmpresas(data.data);
+        }
+      })
+      .catch(err => console.error("Error cargando empresas:", err))
+      .finally(() => setIsLoadingEmpresas(false));
+  }, []);
+
+  // Manejo de Drag & Drop
+  const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragging(true);
-  };
+    if (!selectedEmpresa) return; // No permitir drop si no hay empresa seleccionada
+    setIsDragOver(true);
+  }, [selectedEmpresa]);
 
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragging(false);
-  };
+    setIsDragOver(false);
+  }, []);
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragging(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const droppedFile = e.dataTransfer.files[0];
-      validateAndSetFile(droppedFile);
-    }
-  };
-
-  // --- Manejador de Selección Tradicional ---
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      validateAndSetFile(e.target.files[0]);
-    }
-  };
-
-  const validateAndSetFile = (selectedFile: File) => {
-    // Validar extensión (opcional pero recomendado)
-    const validExtensions = ['.xlsx', '.xls', '.csv'];
-    const fileExtension = selectedFile.name.substring(selectedFile.name.lastIndexOf('.')).toLowerCase();
-    
-    if (!validExtensions.includes(fileExtension)) {
-      setStatusMessage({ type: 'error', text: 'Por favor, sube un archivo Excel válido (.xlsx, .csv)' });
+    setIsDragOver(false);
+    if (!selectedEmpresa) {
+      setMessage({ text: "Primero debes seleccionar la empresa que emite estas facturas.", type: "error" });
       return;
     }
-    
-    setFile(selectedFile);
-    setStatusMessage(null); // Limpiar mensajes anteriores
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await processFile(e.dataTransfer.files[0]);
+    }
+  }, [selectedEmpresa]);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      await processFile(e.target.files[0]);
+      e.target.value = ''; // Limpiar input
+    }
   };
 
-  const clearFile = () => {
-    setFile(null);
-    setStatusMessage(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+  // Función principal de procesamiento
+  const processFile = async (file: File) => {
+    setIsUploading(true);
+    setMessage(null);
+
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+      if (jsonData.length === 0) throw new Error("El archivo está vacío o no es válido.");
+
+      // Encontrar el nombre de la empresa seleccionada para la UI
+      const empresaData = empresas.find(e => e.ruc === selectedEmpresa);
+
+      const res = await fetch("/api/facturas/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          rows: jsonData,
+          fuenteOriginal: file.name,
+          empresaEmisoraRuc: selectedEmpresa,
+          empresaEmisoraNombre: empresaData?.nombreOriginal || "Desconocida",
+          usuarioId: session?.user?.email || "anonimo"
+        }),
+      });
+
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Error al importar.");
+
+      setMessage({ text: result.message, type: "success" });
+    } catch (error: any) {
+      setMessage({ text: error.message, type: "error" });
+    } finally {
+      setIsUploading(false);
+    }
   };
-
-  
-  // --- Lógica de Procesamiento y Subida ---
-  const processAndUpload = async () => {
-    if (!file) return;
-
-    setIsProcessing(true);
-    setStatusMessage(null);
-    const reader = new FileReader();
-
-    reader.onload = async (event) => {
-      try {
-        const data = new Uint8Array(event.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array" });
-        
-        const sheetName = "DIC-2025"; 
-        const actualSheetName = workbook.SheetNames.includes(sheetName) ? sheetName : workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[actualSheetName];
-        
-        // 1. Leemos toda la hoja como un arreglo 2D (matriz cruda)
-        const rawData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-        // 2. Buscamos automáticamente en qué fila están los verdaderos encabezados
-        let headerRowIndex = -1;
-        for (let i = 0; i < rawData.length; i++) {
-          const row = rawData[i] as any[];
-          // Si la fila contiene la columna "CLIENTE" o "Serie", ¡bingo!
-          if (row.includes("CLIENTE") || row.includes("Serie") || row.includes("ESTADO")) {
-            headerRowIndex = i;
-            break;
-          }
-        }
-
-        if (headerRowIndex === -1) {
-          throw new Error("No se encontraron los encabezados válidos (CLIENTE, Serie) en el Excel.");
-        }
-
-        // 3. Extraemos y limpiamos los nombres de los encabezados (quitamos saltos de línea)
-        const headers = (rawData[headerRowIndex] as any[]).map((header, index) => 
-          header ? String(header).replace(/[\r\n]+/g, " ").trim() : `COLUMNA_VACIA_${index}`
-        );
-
-        // 4. Mapeamos las verdaderas filas de datos usando nuestros encabezados limpios
-        const jsonData = [];
-        for (let i = headerRowIndex + 1; i < rawData.length; i++) {
-          const row = rawData[i] as any[];
-          
-          // Ignoramos filas completamente vacías
-          if (row.length === 0 || row.every(cell => cell === undefined || cell === null || cell === "")) {
-            continue;
-          }
-
-          const rowObj: any = {};
-          headers.forEach((header, index) => {
-            rowObj[header] = row[index];
-          });
-          jsonData.push(rowObj);
-        }
-
-        // 5. Enviamos la data limpia al Backend
-        const res = await fetch("/api/process-excel", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            rows: jsonData,
-            fuenteOriginal: file.name
-          }),
-        });
-
-        const result = await res.json();
-        
-        if (res.ok) {
-          setStatusMessage({ type: 'success', text: result.message });
-          setFile(null); 
-        } else {
-          throw new Error(result.error || "Error en el servidor");
-        }
-      } catch (error: any) {
-        setStatusMessage({ type: 'error', text: error.message || "Error procesando el archivo Excel" });
-      } finally {
-        setIsProcessing(false);
-      }
-    };
-
-    reader.onerror = () => {
-      setStatusMessage({ type: 'error', text: "Error de lectura del archivo local" });
-      setIsProcessing(false);
-    };
-
-    reader.readAsArrayBuffer(file);
-  };
-  
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 flex flex-col h-full">
-      <div className="mb-4">
-        <h2 className="text-lg font-bold text-gray-800">Carga Masiva de Facturas</h2>
-        <p className="text-sm text-gray-500">Sube tu Excel o CSV para convertirlo a Markdown en S3.</p>
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full">
+      <div className="p-6 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+        <div>
+          <h2 className="text-lg font-bold text-gray-800">Cargar Facturas Pendientes</h2>
+          <p className="text-sm text-gray-500">Selecciona tu empresa y sube el archivo (CSV/Excel)</p>
+        </div>
       </div>
 
-      {/* ZONA DE ARRASTRE */}
-      {!file ? (
-        <div 
-          className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-8 transition-colors ${
-            isDragging ? "border-indigo-500 bg-indigo-50" : "border-gray-300 bg-gray-50 hover:bg-gray-100"
-          }`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <input 
-            type="file" 
-            ref={fileInputRef}
-            accept=".xlsx, .xls, .csv" 
-            onChange={handleFileSelect} 
-            className="hidden"
-          />
-          <div className="bg-white p-3 rounded-full shadow-sm mb-3">
-            <svg className="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-          </div>
-          <p className="text-sm font-medium text-gray-700 text-center">
-            Haz clic o arrastra tu archivo aquí
-          </p>
-          <p className="text-xs text-gray-400 mt-1">.XLSX, .CSV hasta 10MB</p>
-        </div>
-      ) : (
-        /* ARCHIVO SELECCIONADO */
-        <div className="flex-1 flex flex-col justify-center">
-          <div className="border border-indigo-100 bg-indigo-50 rounded-lg p-4 flex items-center justify-between mb-4">
-            <div className="flex items-center space-x-3 overflow-hidden">
-              <svg className="w-8 h-8 text-green-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-              </svg>
-              <div className="truncate">
-                <p className="text-sm font-semibold text-gray-800 truncate">{file.name}</p>
-                <p className="text-xs text-gray-500">{(file.size / 1024).toFixed(1)} KB</p>
-              </div>
-            </div>
-            <button 
-              onClick={clearFile}
-              disabled={isProcessing}
-              className="text-gray-400 hover:text-red-500 p-2 transition-colors"
+      <div className="p-6 flex-1 flex flex-col space-y-6">
+        
+        {/* SELECTOR DE EMPRESA */}
+        <div className="flex flex-col space-y-2">
+          <label className="text-sm font-bold text-gray-700">Empresa que factura (Cobrador) <span className="text-red-500">*</span></label>
+          {isLoadingEmpresas ? (
+            <div className="animate-pulse bg-gray-200 h-10 rounded-lg"></div>
+          ) : (
+            <select 
+              value={selectedEmpresa}
+              onChange={(e) => {
+                setSelectedEmpresa(e.target.value);
+                setMessage(null);
+              }}
+              className="border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none font-medium text-gray-700 bg-white"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
+              <option value="">-- Selecciona una empresa --</option>
+              {empresas.map((emp, idx) => (
+                <option key={idx} value={emp.ruc}>
+                  {emp.nombreOriginal} (RUC: {emp.ruc})
+                </option>
+              ))}
+            </select>
+          )}
+          {empresas.length === 0 && !isLoadingEmpresas && (
+            <p className="text-xs text-amber-600">No tienes empresas creadas. Ve al "Directorio RUCs" para registrar tu primera empresa.</p>
+          )}
+        </div>
+
+        {/* ZONA DRAG & DROP */}
+        {isUploading ? (
+          <div className="flex-1 flex flex-col justify-center items-center text-center space-y-4">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-green-600 mx-auto"></div>
+            <p className="text-gray-600 font-medium">Leyendo celdas y guardando en base de datos...</p>
           </div>
+        ) : (
+          <div className="flex-1 flex flex-col">
+            <div 
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => {
+                if (!selectedEmpresa) setMessage({ text: "Por favor, selecciona una empresa primero.", type: "error" });
+                else fileInputRef.current?.click();
+              }}
+              className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-6 text-center transition-all duration-200 ${
+                !selectedEmpresa ? "border-gray-200 bg-gray-50 cursor-not-allowed opacity-60" :
+                isDragOver ? "border-green-500 bg-green-50 cursor-pointer" : "border-gray-300 hover:border-green-400 hover:bg-green-50 cursor-pointer"
+              }`}
+            >
+              <input type="file" className="hidden" accept=".xlsx, .xls, .csv" ref={fileInputRef} onChange={handleFileChange} disabled={!selectedEmpresa} />
+              <div className={`mx-auto w-12 h-12 mb-3 ${selectedEmpresa ? "text-green-500" : "text-gray-400"}`}>
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+              </div>
+              <span className="text-gray-700 font-medium">Haz clic o arrastra tu Excel aquí</span>
+              <span className="text-xs text-gray-400 mt-1">.csv, .xlsx</span>
+            </div>
 
-          <button
-            onClick={processAndUpload}
-            disabled={isProcessing}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-          >
-            {isProcessing ? (
-              <>
-                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Procesando y Subiendo...
-              </>
-            ) : (
-              "Iniciar Conversión a Markdown"
+            {message && (
+              <div className={`mt-4 p-3 rounded-lg text-sm font-medium ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+                {message.text}
+              </div>
             )}
-          </button>
-        </div>
-      )}
-
-      {/* MENSAJES DE ESTADO */}
-      {statusMessage && (
-        <div className={`mt-4 p-3 rounded-lg text-sm font-medium text-center ${
-          statusMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
-        }`}>
-          {statusMessage.text}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

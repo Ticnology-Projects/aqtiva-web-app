@@ -1,184 +1,204 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { uploadAndMatchInvoice } from "@/lib/api";
+import { useSession } from "next-auth/react";
 
 interface InvoiceUploaderProps {
-  onUploadSuccess: () => void;
+  // onUploadSuccess ahora recibe la lista de resultados para que el dashboard los dibuje
+  onUploadSuccess: (resultados: any[]) => void; 
 }
 
 export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
-  const [isDragActive, setIsDragActive] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState("");
+  const { data: session } = useSession();
   
-  // Nuevos estados para retener el archivo antes de subirlo
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [customFilename, setCustomFilename] = useState("");
+  // Estados de empresa
+  const [empresas, setEmpresas] = useState<any[]>([]);
+  const [selectedEmpresa, setSelectedEmpresa] = useState<string>("");
+  const [isLoadingEmpresas, setIsLoadingEmpresas] = useState(true);
+
+  // Estados de archivos
+  const [files, setFiles] = useState<File[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [fileStatus, setFileStatus] = useState<Record<string, string>>({});
   
+  const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setIsDragActive(true);
-    } else if (e.type === "dragleave") {
-      setIsDragActive(false);
-    }
-  };
+  // Cargar empresas al inicio
+  useEffect(() => {
+    if (!session?.user?.email) return;
+    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) setEmpresas(data.data);
+      })
+      .catch(err => console.error(err))
+      .finally(() => setIsLoadingEmpresas(false));
+  }, [session]);
 
-  const captureFile = (file: File) => {
-    const allowedExtensions = /(\.pdf|\.jpg|\.jpeg|\.png)$/i;
-    if (!allowedExtensions.exec(file.name)) {
-      alert("Por favor, sube un archivo válido (PDF o Imagen JPG/PNG).");
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (selectedEmpresa) setIsDragOver(true);
+  }, [selectedEmpresa]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (!selectedEmpresa) {
+      alert("Selecciona primero la empresa cobradora.");
       return;
     }
-
-    setPendingFile(file);
-    // ✅ CORREGIDO: Quitamos el .toLowerCase()
-    const safeName = file.name.replace(/\s+/g, '-'); 
-    setCustomFilename(safeName);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragActive(false);
-
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      captureFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      setFiles((prev) => [...prev, ...Array.from(e.dataTransfer.files)]);
     }
-  };
+  }, [selectedEmpresa]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      captureFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
     }
   };
 
-  const handleFilenameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Forzar minúsculas y reemplazar espacios por guiones en tiempo real
-    const value = e.target.value.toLowerCase().replace(/\s+/g, '-');
-    setCustomFilename(value);
+  const removeFile = (indexToRemove: number) => {
+    setFiles(files.filter((_, index) => index !== indexToRemove));
   };
 
-  const confirmUpload = async () => {
-    if (!pendingFile || !customFilename.trim()) return;
+  const handleUploadAll = async () => {
+    if (files.length === 0 || !selectedEmpresa) return;
+    
+    setIsUploading(true);
+    setCurrentFileIndex(0);
+    
+    let successCount = 0;
+    const resultadosBatch: any[] = [];
 
-    setLoading(true);
-    setStatusMessage("Iniciando proceso...");
-    try {
-      // Magia: Creamos una copia exacta del archivo pero con el nuevo nombre seguro
-      const renamedFile = new File([pendingFile], customFilename, {
-        type: pendingFile.type,
-      });
-
-      await uploadAndMatchInvoice(renamedFile, (msg) => setStatusMessage(msg));
-      alert("¡Documento procesado y conciliado con éxito!");
+    // Procesamos secuencialmente
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setCurrentFileIndex(i + 1);
       
-      // Limpiamos el estado y recargamos la tabla
-      setPendingFile(null);
-      setCustomFilename("");
-      onUploadSuccess(); 
-    } catch (error: any) {
-      alert(`Error en el proceso: ${error.message}`);
-    } finally {
-      setLoading(false);
-      setStatusMessage("");
+      try {
+        // PASAMOS EL RUC DE LA EMPRESA SELECCIONADA A LA API
+        const result = await uploadAndMatchInvoice(file, selectedEmpresa, (progressMessage) => {
+          setFileStatus((prev) => ({ ...prev, [file.name]: progressMessage }));
+        });
+        
+        resultadosBatch.push({ fileName: file.name, ...result.data });
+        setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado correctamente" }));
+        successCount++;
+        
+      } catch (error: any) {
+        setFileStatus((prev) => ({ ...prev, [file.name]: `❌ Error: ${error.message}` }));
+      }
     }
-  };
 
-  const cancelUpload = () => {
-    setPendingFile(null);
-    setCustomFilename("");
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    setIsUploading(false);
+    
+    setTimeout(() => {
+      alert(`Lote finalizado: ${successCount} vouchers analizados.`);
+      setFiles([]);
+      setFileStatus({});
+      // Enviamos todos los resultados (Sugerencias, Confianza, etc) al layout
+      onUploadSuccess(resultadosBatch); 
+    }, 1500);
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm mb-8">
-      <h3 className="text-lg font-bold text-gray-800 mb-2">Cargar Nuevo Comprobante</h3>
-      
-      {/* FLUJO 1: SELECCIONAR ARCHIVO */}
-      {!pendingFile && (
-        <>
-          <p className="text-sm text-gray-500 mb-4">
-            Sube el voucher de transferencia o constancia para ejecutar la auditoría automática.
-          </p>
-          <div
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full">
+      <div className="p-6 border-b border-gray-200 bg-gray-50">
+        <h2 className="text-lg font-bold text-gray-800">Analizar Vouchers</h2>
+        <p className="text-sm text-gray-500">Arrastra comprobantes (PDF, JPG, PNG)</p>
+      </div>
+
+      <div className="p-6 flex-1 flex flex-col">
+        {/* SELECTOR DE EMPRESA */}
+        <div className="flex flex-col space-y-2 mb-6">
+          <label className="text-sm font-bold text-gray-700">Empresa (A la que le pagaron) <span className="text-indigo-500">*</span></label>
+          <select 
+            value={selectedEmpresa}
+            onChange={(e) => setSelectedEmpresa(e.target.value)}
+            disabled={isUploading}
+            className="border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-gray-700"
+          >
+            <option value="">-- Selecciona una empresa --</option>
+            {empresas.map((emp, idx) => (
+              <option key={idx} value={emp.ruc}>{emp.nombreOriginal} (RUC: {emp.ruc})</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Zona Dropzone */}
+        {!isUploading && (
+          <div 
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all cursor-pointer ${
-              isDragActive ? "border-indigo-500 bg-indigo-50/50" : "border-gray-300 hover:border-gray-400"
+            onClick={() => {
+              if(!selectedEmpresa) alert("Selecciona una empresa primero.");
+              else fileInputRef.current?.click();
+            }}
+            className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ${
+              !selectedEmpresa ? "border-gray-200 bg-gray-50 cursor-not-allowed opacity-60" :
+              isDragOver ? "border-indigo-500 bg-indigo-50 cursor-pointer" : "border-gray-300 hover:border-indigo-400 hover:bg-gray-50 cursor-pointer"
             }`}
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              accept=".pdf,.jpg,.jpeg,.png"
-              onChange={handleFileChange}
-            />
-            <div className="text-center">
-              <span className="text-4xl mb-3 block">📥</span>
-              <p className="text-sm font-medium text-gray-700">
-                Arrastra y suelta tu archivo aquí, o <span className="text-indigo-600 underline">búscalo en tu equipo</span>
-              </p>
-              <p className="text-xs text-gray-400 mt-1">Soporta PDF, JPG, JPEG y PNG</p>
+            <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileChange} accept=".pdf,.png,.jpg,.jpeg" disabled={!selectedEmpresa} />
+            <div className={`mx-auto w-12 h-12 mb-3 ${selectedEmpresa ? "text-indigo-400" : "text-gray-300"}`}>
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
             </div>
+            <p className="text-gray-600 font-medium">Arrastra tus archivos aquí</p>
           </div>
-        </>
-      )}
+        )}
 
-      {/* FLUJO 2: CONFIRMAR NOMBRE (Paso Intermedio) */}
-      {pendingFile && (
-        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-6">
-          {/* Alerta de advertencia para el usuario */}
-          <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 mb-5 rounded shadow-sm text-sm">
-            <strong>⚠️ Importante para el análisis:</strong> Asegúrate de incluir el identificador exacto de la factura (ej: <b>f001-120</b>) dentro del nombre del archivo. Esto ayuda a la IA a cruzar los datos correctamente con tu catálogo.
+        {/* Lista de archivos en cola */}
+        {files.length > 0 && (
+          <div className="mt-4 flex-1 overflow-y-auto max-h-[180px] pr-2 custom-scrollbar">
+            <ul className="space-y-2">
+              {files.map((file, index) => (
+                <li key={index} className="bg-gray-50 border border-gray-100 rounded-lg p-3 text-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-700 font-medium truncate pr-4">📄 {file.name}</span>
+                    {!isUploading && (
+                      <button onClick={() => removeFile(index)} className="text-red-400 hover:text-red-600">✕</button>
+                    )}
+                  </div>
+                  {(isUploading && fileStatus[file.name]) && (
+                    <div className="mt-2 text-xs font-mono text-indigo-600 bg-indigo-50 px-2 py-1 rounded">{fileStatus[file.name]}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
           </div>
+        )}
+      </div>
 
-          <div className="flex flex-col space-y-4">
-            <div>
-              <label className="block text-sm font-semibold text-indigo-900 mb-1">
-                Nombre del archivo (sólo minúsculas y sin espacios)
-              </label>
-              <input
-                type="text"
-                value={customFilename}
-                onChange={handleFilenameChange}
-                disabled={loading}
-                className="w-full px-4 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm disabled:opacity-50"
-              />
-            </div>
-
-            {loading ? (
-              <div className="flex items-center space-x-3 bg-white p-3 rounded-lg border">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600"></div>
-                <p className="text-sm font-semibold text-indigo-700 animate-pulse">{statusMessage}</p>
-              </div>
-            ) : (
-              <div className="flex space-x-3 pt-2">
-                <button
-                  onClick={cancelUpload}
-                  className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors font-medium text-sm"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={confirmUpload}
-                  className="px-4 py-2 bg-indigo-600 rounded-lg text-white hover:bg-indigo-700 transition-colors font-medium text-sm shadow-sm flex items-center gap-2"
-                >
-                  <span>🚀</span> Iniciar Subida y Auditoría
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Footer de Acción */}
+      <div className="p-6 bg-gray-50 border-t border-gray-200 mt-auto">
+        {isUploading ? (
+           <div className="space-y-2">
+             <div className="flex justify-between text-xs font-bold text-gray-700">
+               <span>Analizando lote...</span>
+               <span>{currentFileIndex} / {files.length}</span>
+             </div>
+             <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-indigo-600 h-2 rounded-full transition-all" style={{ width: `${(currentFileIndex / files.length) * 100}%` }}></div></div>
+           </div>
+        ) : (
+          <button
+            onClick={handleUploadAll}
+            disabled={files.length === 0 || !selectedEmpresa}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Iniciar Conciliación de {files.length || ""} Vouchers
+          </button>
+        )}
+      </div>
     </div>
   );
 }

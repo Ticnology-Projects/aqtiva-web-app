@@ -64,34 +64,29 @@ export function ExcelUploader() {
   };
 
   // Función principal de procesamiento
+  // Función principal de procesamiento
   const processFile = async (file: File) => {
     setIsUploading(true);
     setMessage(null);
 
     try {
       const data = await file.arrayBuffer();
-
-      // 1. cellDates: true -> Obliga a la librería a reconocer los números internos de Excel como fechas reales
-      const workbook = XLSX.read(data, { cellDates: true });
+      const workbook = XLSX.read(data, { type: "array", raw: true });
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-
-      // 2. raw: false -> Transforma el dato directamente a Texto ("String") antes de que JS intente aplicar zonas horarias
-      // 3. dateNF -> Fuerza el formato Latino/Peruano (Día/Mes/Año) en lugar del americano
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-        defval: "",
-        raw: false,
-        dateNF: "dd/mm/yyyy"
+      
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { 
+        defval: "", 
+        raw: false 
       });
 
       if (jsonData.length === 0) throw new Error("El archivo está vacío o no es válido.");
 
-      // Encontrar el nombre de la empresa seleccionada para la UI
       const empresaData = empresas.find(e => e.ruc === selectedEmpresa);
 
       const res = await fetch("/api/facturas/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify({ 
           rows: jsonData,
           fuenteOriginal: file.name,
           empresaEmisoraRuc: selectedEmpresa,

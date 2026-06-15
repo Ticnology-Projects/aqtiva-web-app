@@ -6,14 +6,14 @@ import { useSession } from "next-auth/react";
 
 export function ExcelUploader() {
   const { data: session } = useSession();
-  
+
   const [empresas, setEmpresas] = useState<any[]>([]);
   const [selectedEmpresa, setSelectedEmpresa] = useState<string>("");
   const [isLoadingEmpresas, setIsLoadingEmpresas] = useState(true);
 
   const [isUploading, setIsUploading] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
-  
+
   // Estados para Drag & Drop
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -70,9 +70,18 @@ export function ExcelUploader() {
 
     try {
       const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data);
+
+      // 1. cellDates: true -> Obliga a la librería a reconocer los números internos de Excel como fechas reales
+      const workbook = XLSX.read(data, { cellDates: true });
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+      // 2. raw: false -> Transforma el dato directamente a Texto ("String") antes de que JS intente aplicar zonas horarias
+      // 3. dateNF -> Fuerza el formato Latino/Peruano (Día/Mes/Año) en lugar del americano
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+        defval: "",
+        raw: false,
+        dateNF: "dd/mm/yyyy"
+      });
 
       if (jsonData.length === 0) throw new Error("El archivo está vacío o no es válido.");
 
@@ -82,7 +91,7 @@ export function ExcelUploader() {
       const res = await fetch("/api/facturas/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           rows: jsonData,
           fuenteOriginal: file.name,
           empresaEmisoraRuc: selectedEmpresa,
@@ -112,14 +121,14 @@ export function ExcelUploader() {
       </div>
 
       <div className="p-6 flex-1 flex flex-col space-y-6">
-        
+
         {/* SELECTOR DE EMPRESA */}
         <div className="flex flex-col space-y-2">
           <label className="text-sm font-bold text-gray-700">Empresa que factura (Cobrador) <span className="text-red-500">*</span></label>
           {isLoadingEmpresas ? (
             <div className="animate-pulse bg-gray-200 h-10 rounded-lg"></div>
           ) : (
-            <select 
+            <select
               value={selectedEmpresa}
               onChange={(e) => {
                 setSelectedEmpresa(e.target.value);
@@ -148,7 +157,7 @@ export function ExcelUploader() {
           </div>
         ) : (
           <div className="flex-1 flex flex-col">
-            <div 
+            <div
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
@@ -156,10 +165,9 @@ export function ExcelUploader() {
                 if (!selectedEmpresa) setMessage({ text: "Por favor, selecciona una empresa primero.", type: "error" });
                 else fileInputRef.current?.click();
               }}
-              className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-6 text-center transition-all duration-200 ${
-                !selectedEmpresa ? "border-gray-200 bg-gray-50 cursor-not-allowed opacity-60" :
-                isDragOver ? "border-green-500 bg-green-50 cursor-pointer" : "border-gray-300 hover:border-green-400 hover:bg-green-50 cursor-pointer"
-              }`}
+              className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-6 text-center transition-all duration-200 ${!selectedEmpresa ? "border-gray-200 bg-gray-50 cursor-not-allowed opacity-60" :
+                  isDragOver ? "border-green-500 bg-green-50 cursor-pointer" : "border-gray-300 hover:border-green-400 hover:bg-green-50 cursor-pointer"
+                }`}
             >
               <input type="file" className="hidden" accept=".xlsx, .xls, .csv" ref={fileInputRef} onChange={handleFileChange} disabled={!selectedEmpresa} />
               <div className={`mx-auto w-12 h-12 mb-3 ${selectedEmpresa ? "text-green-500" : "text-gray-400"}`}>

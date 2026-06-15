@@ -4,6 +4,9 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 
+// NUEVO: Importamos el componente reutilizable
+import Navbar from "@/components/layout/Navbar";
+
 type Empresa = {
   nombreOriginal: string;
   ruc: string;
@@ -25,17 +28,14 @@ export default function DirectorioEmpresasPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
-  // NUEVO: Función segura para obtener el ID del usuario
   const getUserIdentifier = () => {
     if (!session?.user) return null;
     return session.user.email || session.user.name || "usuario_local";
   };
 
-  // Cargar las empresas del usuario actual
   const fetchEmpresas = async () => {
     const userId = getUserIdentifier();
     
-    // Si la sesión está cargando o no hay usuario, detenemos la ejecución
     if (status === "loading" || !userId) return;
     
     setIsLoading(true);
@@ -43,7 +43,6 @@ export default function DirectorioEmpresasPage() {
       const res = await fetch(`/api/empresas?usuarioId=${encodeURIComponent(userId)}`);
       const json = await res.json();
       if (json.success) {
-        // Ordenamos las más recientes primero
         const sorted = json.data.sort((a: any, b: any) => 
           new Date(b.fechaCreacion).getTime() - new Date(a.fechaCreacion).getTime()
         );
@@ -62,7 +61,6 @@ export default function DirectorioEmpresasPage() {
     }
   }, [status, session]);
 
-  // Manejar el envío del formulario
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -76,7 +74,6 @@ export default function DirectorioEmpresasPage() {
 
     const userId = getUserIdentifier();
 
-    // Verificación de seguridad en el cliente
     if (!userId) {
       setStatusMessage({ type: 'error', text: "No se pudo identificar tu sesión. Intenta recargar la página." });
       setIsSubmitting(false);
@@ -89,7 +86,7 @@ export default function DirectorioEmpresasPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...formData,
-          usuarioId: userId // NUEVO: Enviamos el identificador seguro
+          usuarioId: userId
         })
       });
 
@@ -98,7 +95,7 @@ export default function DirectorioEmpresasPage() {
 
       setFormData({ nombre: "", ruc: "" });
       setIsModalOpen(false);
-      fetchEmpresas(); // Refrescar la tabla
+      fetchEmpresas(); 
       
     } catch (error: any) {
       setStatusMessage({ type: 'error', text: error.message });
@@ -112,26 +109,14 @@ export default function DirectorioEmpresasPage() {
   return (
     <div className="bg-gray-50 min-h-screen font-sans text-gray-800">
       
-      {/* NAVEGACIÓN PRINCIPAL */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10 shadow-sm">
-        <div className="flex items-center gap-8">
-          <div className="flex items-center gap-2 font-bold text-xl tracking-tight text-indigo-700 cursor-pointer" onClick={() => router.push('/')}>
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white">A</div>
-            AQTIVA
-          </div>
-          
-          <nav className="hidden md:flex gap-1 text-sm font-medium">
-            <button onClick={() => router.push('/')} className="px-4 py-2 rounded-lg transition-colors text-gray-500 hover:bg-gray-100">Volver a la App</button>
-            <button className="px-4 py-2 rounded-lg transition-colors bg-indigo-50 text-indigo-700 font-bold">Directorio RUCs</button>
-          </nav>
-        </div>
-        
-        <div className="flex items-center gap-4">
-          <div className="w-9 h-9 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-sm cursor-pointer">
-            {session?.user?.name?.charAt(0) || "U"}
-          </div>
-        </div>
-      </header>
+      {/* NUEVO: Implementación limpia del Navbar */}
+      <Navbar 
+        activeNav={"empresas" as any} 
+        setActiveNav={(nav) => {
+          // Como estamos en una ruta diferente (/empresas), si hace clic en el Navbar lo mandamos al inicio
+          router.push("/");
+        }} 
+      />
 
       {/* CONTENIDO */}
       <main className="max-w-5xl mx-auto p-6 md:p-8 animate-fadeIn">

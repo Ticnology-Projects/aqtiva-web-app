@@ -3,6 +3,50 @@
 import { useState, useEffect } from "react";
 import FacturaDetailsModal from "../modals/FacturaDetailsModal";
 
+// ==========================================
+// 🚨 HELPERS DE FECHA (Corrige el error de DD/MM/YYYY)
+// ==========================================
+
+// Convierte un texto "DD/MM/YYYY" o "YYYY-MM-DD" en un valor numérico de tiempo seguro para comparar
+const parseCustomDate = (dateStr: string): number => {
+  if (!dateStr) return 0;
+
+  // Si viene del Excel con barras (ej. "07/01/2026" o "7/1/2026") -> Asumimos DD/MM/YYYY
+  if (dateStr.includes('/')) {
+    const parts = dateStr.split('/');
+    const day = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1; // JS los meses van de 0 a 11
+    let year = parseInt(parts[2], 10);
+    if (year < 100) year += 2000; // Por si el año viene como "26" en lugar de "2026"
+    return new Date(year, month, day).getTime();
+  }
+
+  // Si viene del filtro de input date (ej. "2026-01-07") -> YYYY-MM-DD
+  if (dateStr.includes('-')) {
+    const parts = dateStr.split('-');
+    if (parts[0].length === 4) {
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      return new Date(year, month, day).getTime();
+    }
+  }
+
+  // Fallback por si acaso
+  return new Date(dateStr).getTime() || 0;
+};
+
+// Muestra la fecha bonita en la tabla siempre en formato DD/MM/YYYY
+const displayDate = (dateStr: string) => {
+  if (!dateStr) return 'Sin fecha';
+  if (dateStr.includes('/')) return dateStr; // Si ya es "07/01/2026", lo deja tal cual
+  if (dateStr.includes('-') && dateStr.split('-')[0].length === 4) {
+    const [y, m, d] = dateStr.split('-');
+    return `${d}/${m}/${y}`; // Convierte "2026-01-07" a "07/01/2026"
+  }
+  return dateStr;
+};
+
 export default function CatalogoView() {
   const [facturas, setFacturas] = useState<any[]>([]);
   const [isLoadingFacturas, setIsLoadingFacturas] = useState(false);
@@ -22,10 +66,11 @@ export default function CatalogoView() {
       .then((res) => res.json())
       .then((data) => {
         if (data.success) {
+          // Ahora ordenamos usando nuestro parseador latino
           const sorted = data.data.sort((a: any, b: any) => {
-            if (!a.fecha_emision) return 1;
-            if (!b.fecha_emision) return -1;
-            return new Date(b.fecha_emision).getTime() - new Date(a.fecha_emision).getTime();
+            const timeA = parseCustomDate(a.fecha_emision);
+            const timeB = parseCustomDate(b.fecha_emision);
+            return timeB - timeA;
           });
           setFacturas(sorted);
         }
@@ -51,7 +96,7 @@ export default function CatalogoView() {
       Number(f.monto || 0).toFixed(2),
       f.moneda || "PEN",
       f.estado,
-      f.fecha_emision || "N/A",
+      displayDate(f.fecha_emision), // Aseguramos que exporte bonito
       f.voucher_conciliado ? f.voucher_conciliado.split('/').pop() : "Ninguno"
     ]);
 
@@ -69,7 +114,7 @@ export default function CatalogoView() {
   const filteredFacturas = facturas.filter((factura) => {
     // 1. Filtro por Texto
     const term = searchTerm.toLowerCase();
-    const matchSearch = !term || 
+    const matchSearch = !term ||
       factura.numero_documento?.toLowerCase().includes(term) ||
       factura.cliente?.toLowerCase().includes(term) ||
       factura.estado?.toLowerCase().includes(term);
@@ -80,16 +125,19 @@ export default function CatalogoView() {
     const max = montoMax ? Number(montoMax) : Infinity;
     const matchMonto = fMonto >= min && fMonto <= max;
 
-    // 3. Filtro por Fecha (Asume YYYY-MM-DD en fecha_emision)
+    // 3. Filtro por Fecha Exacto (Resuelve el problema de DD/MM/YYYY)
     let matchFecha = true;
     if (fechaInicio || fechaFin) {
       if (!factura.fecha_emision) {
-        matchFecha = false; // Si buscan por fecha y la factura no tiene, la oculta
+        matchFecha = false;
       } else {
-        const fDate = new Date(factura.fecha_emision).getTime();
-        const start = fechaInicio ? new Date(fechaInicio).getTime() : 0;
-        // Se suma 86400000 (1 día) al final para incluir el día completo
-        const end = fechaFin ? new Date(fechaFin).getTime() + 86400000 : Infinity;
+        const fDate = parseCustomDate(factura.fecha_emision);
+
+        // Los inputs type="date" en HTML siempre devuelven "YYYY-MM-DD"
+        const start = fechaInicio ? parseCustomDate(fechaInicio) : 0;
+        // Sumamos 86399999 milisegundos para que incluya el final del día seleccionado (23:59:59)
+        const end = fechaFin ? parseCustomDate(fechaFin) + 86399999 : Infinity;
+
         matchFecha = fDate >= start && fDate <= end;
       }
     }
@@ -199,7 +247,8 @@ export default function CatalogoView() {
                   <tr key={idx} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4">
                       <p className="font-bold text-gray-900">{factura.numero_documento}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">{factura.fecha_emision ? new Date(factura.fecha_emision).toLocaleDateString('es-PE') : 'Sin fecha'}</p>
+                      {/* Usamos displayDate para mostrarla correctamente */}
+                      <p className="text-xs text-gray-500 mt-0.5 font-medium">{displayDate(factura.fecha_emision)}</p>
                     </td>
                     <td className="px-6 py-4">
                       <p className="text-indigo-700 font-bold text-sm truncate max-w-[200px]">{factura.empresa_emisora_nombre || 'N/A'}</p>
@@ -228,7 +277,11 @@ export default function CatalogoView() {
         )}
       </div>
 
-      <FacturaDetailsModal facturaDetails={facturaDetails} onClose={() => setFacturaDetails(null)} />
+      <FacturaDetailsModal
+        facturaDetails={facturaDetails}
+        onClose={() => setFacturaDetails(null)}
+        onRefresh={fetchFacturas} // <--- NUEVO
+      />
     </div>
   );
 }

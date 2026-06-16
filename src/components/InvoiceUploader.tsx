@@ -77,6 +77,7 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
     setCurrentFileIndex(0);
     
     let successCount = 0;
+    let autoConciliados = 0; // 🚨 NUEVO: Contador de auto-conciliados
     const resultadosBatch: any[] = [];
 
     // Procesamos secuencialmente
@@ -85,13 +86,47 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
       setCurrentFileIndex(i + 1);
       
       try {
-        // PASAMOS EL RUC DE LA EMPRESA SELECCIONADA A LA API
         const result = await uploadAndMatchInvoice(file, selectedEmpresa, (progressMessage) => {
           setFileStatus((prev) => ({ ...prev, [file.name]: progressMessage }));
         });
         
+        const conciliacion = result.data?.conciliacion;
+        
+        // 🚀 MAGIA STP: Auto-conciliación si hay alta certeza
+        if (conciliacion?.nivel_confianza === "ALTO" && conciliacion?.factura_sugerida) {
+          setFileStatus((prev) => ({ ...prev, [file.name]: "🤖 Match ALTO: Auto-conciliando..." }));
+          
+          // Reconstruimos las llaves exactas que DynamoDB espera
+          const s3KeyOriginal = result.data.s3_key || "";
+          const baseName = s3KeyOriginal.split('/').pop()?.replace('.json', '') || file.name;
+          const processedS3Key = `processed/${baseName}.json`;
+          const voucherPK = `VOUCHER#${baseName}`;
+
+          // Disparamos la misma API que usa el humano en el Triaje
+          const autoRes = await fetch("/api/facturas/resolver", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+              factura_pk: conciliacion.factura_sugerida.PK, 
+              numero_documento: conciliacion.factura_sugerida.numero_documento, 
+              s3_key_voucher: processedS3Key, 
+              PK_Voucher: voucherPK 
+            })
+          });
+
+          const autoData = await autoRes.json();
+          if (autoData.success) {
+             setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado y Auto-conciliado" }));
+             autoConciliados++;
+          } else {
+             setFileStatus((prev) => ({ ...prev, [file.name]: "⚠️ Procesado, pero falló la auto-conciliación" }));
+          }
+        } else {
+          // Si es Medio, Bajo o Sin Match, se queda solo procesado para revisión manual
+          setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado (Enviado a Triaje)" }));
+        }
+
         resultadosBatch.push({ fileName: file.name, ...result.data });
-        setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado correctamente" }));
         successCount++;
         
       } catch (error: any) {
@@ -102,10 +137,10 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
     setIsUploading(false);
     
     setTimeout(() => {
-      alert(`Lote finalizado: ${successCount} vouchers analizados.`);
+      // 🚨 NUEVO: Alerta detallada
+      alert(`Lote finalizado: ${successCount} comprobantes analizados.\n🤖 ${autoConciliados} se auto-conciliaron y ${successCount - autoConciliados} pasaron a Triaje.`);
       setFiles([]);
       setFileStatus({});
-      // Enviamos todos los resultados (Sugerencias, Confianza, etc) al layout
       onUploadSuccess(resultadosBatch); 
     }, 1500);
   };

@@ -65,13 +65,13 @@ export async function POST(req: Request) {
       }
 
       // 3. GUARDAR EN DYNAMODB
-      const PK = `INVOICE#${numDoc}`;
+      const PK = `INVOICE#${empresaEmisoraRuc}#${numDoc}`;
       
       try {
         await dynamoDb.send(new PutCommand({
-          TableName: "AqtivaChatDB", // Asegúrate que este sea el nombre de tu tabla
+          TableName: "AqtivaChatDB",
           Item: {
-            PK: PK,
+            PK: PK, // Ahora sí usará el formato INVOICE#20100097746#F001-160
             SK: "METADATA",
             numero_documento: numDoc,
             cliente: cliente,
@@ -86,11 +86,14 @@ export async function POST(req: Request) {
             estado: estadoFinal,
             fuente_importacion: fuenteOriginal || "Excel",
             fecha_importacion: new Date().toISOString()
-          }
+          },
+          ConditionExpression: "attribute_not_exists(PK)"
         }));
         procesados++;
-      } catch (err) {
-        console.error(`Error guardando factura ${numDoc} en DynamoDB:`, err);
+      } catch (err: any) {
+        if (err.name !== "ConditionalCheckFailedException") {
+           console.error(`Error guardando factura ${numDoc}:`, err);
+        }
         errores++;
       }
     }

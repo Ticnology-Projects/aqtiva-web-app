@@ -10,11 +10,11 @@ import TriajeView from "@/components/views/TriajeView";
 import AuditoriaView from "@/components/views/AuditoriaView";
 import EmpresasView from "@/components/views/EmpresasView";
 import DashboardView from "@/components/views/DashboardView";
+import BovedaView from "@/components/views/BovedaView";
 
 export default function ApplicationLayout() {
   const { status } = useSession();
-  // Agregamos "empresas" al estado inicial
-  const [activeNav, setActiveNav] = useState<"dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas">("carga-masiva");
+  const [activeNav, setActiveNav] = useState<"dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas" | "boveda">("carga-masiva");
 
   if (status === "loading") return <div className="min-h-screen bg-gray-50"></div>;
 
@@ -29,6 +29,7 @@ export default function ApplicationLayout() {
         {activeNav === "resolucion" && <TriajeView />}
         {activeNav === "auditoria" && <AuditoriaView />}
         {activeNav === "empresas" && <EmpresasView />}
+        {activeNav === "boveda" && <BovedaView />}
       </main>
     </div>
   );

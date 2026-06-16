@@ -29,25 +29,49 @@ export async function POST(req: Request) {
       });
       const jsonResponse = await s3Client.send(getJsonCommand);
       const jsonString = await jsonResponse.Body?.transformToString();
+      
       if (jsonString) {
-        originalImagePath = JSON.parse(jsonString).archivo;
+        const parsedData = JSON.parse(jsonString);
+        originalImagePath = parsedData.archivo;
+
+        // 🚨 FALLBACK SALVAVIDAS: Si el JSON de processed/ no tiene la propiedad "archivo"
+        // (Como ocurrió con los vouchers que subiste recientemente)
+        if (!originalImagePath && s3_key_json.startsWith("processed/")) {
+            const outputKey = s3_key_json.replace("processed/", "output/");
+            try {
+                const outResponse = await s3Client.send(new GetObjectCommand({
+                    Bucket: process.env.BUCKET_NAME,
+                    Key: outputKey,
+                }));
+                const outStr = await outResponse.Body?.transformToString();
+                if (outStr) {
+                    originalImagePath = JSON.parse(outStr).archivo;
+                }
+            } catch (e) {
+                console.error("Fallback a output/ falló:", e);
+            }
+        }
       }
     }
-    // Si NO es JSON, significa que es nuestro ADJUNTO MANUAL directo (.png), así que usamos la ruta original.
+
+    // Evitamos el error 500 si la ruta final sigue siendo undefined
+    if (!originalImagePath) {
+      return NextResponse.json(
+        { error: "No se pudo encontrar el archivo original (png/pdf) vinculado a este JSON." }, 
+        { status: 404 }
+      );
+    }
 
     const getImageCommand = new GetObjectCommand({
       Bucket: process.env.BUCKET_NAME,
       Key: originalImagePath,
     });
 
-    const signedUrl = await getSignedUrl(s3Client, getImageCommand, {
-      expiresIn: 3600,
-    });
-    return NextResponse.json({ success: true, url: signedUrl });
+    const url = await getSignedUrl(s3Client, getImageCommand, { expiresIn: 3600 });
+    return NextResponse.json({ success: true, url });
+
   } catch (error: any) {
-    return NextResponse.json(
-      { success: false, error: error.message },
-      { status: 500 },
-    );
+    console.error("Error obteniendo URL de imagen:", error);
+    return NextResponse.json({ error: "Fallo interno al obtener la imagen." }, { status: 500 });
   }
 }

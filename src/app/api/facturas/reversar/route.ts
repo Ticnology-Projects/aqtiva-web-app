@@ -4,92 +4,63 @@ import { dynamoDb } from "@/lib/dynamodb";
 
 export async function POST(req: Request) {
   try {
-    const { numero_documento, s3_key_voucher, audit_pk, tipo_accion } =
-      await req.json();
+    // Recibimos los datos del ticket de auditoría que se está reversando
+    const { PK: audit_pk, numero_documento, factura_vinculada_pk, voucher_vinculado } = await req.json();
 
-    if (!numero_documento)
-      return NextResponse.json(
-        { error: "Número de documento obligatorio." },
-        { status: 400 },
-      );
-
-    // 1. REVERSAR FACTURA SEGÚN TIPO DE ACCIÓN
-    if (tipo_accion === "ADJUNTO_MANUAL") {
-      // Estaba cobrada desde CSV, solo quitamos la foto. Se queda COBRADO.
-      await dynamoDb.send(
-        new UpdateCommand({
-          TableName: "AqtivaChatDB",
-          Key: { PK: `INVOICE#${numero_documento}`, SK: "METADATA" },
-          UpdateExpression: "REMOVE voucher_conciliado",
-        }),
-      );
-    } else {
-      // Conciliación real por Triaje, devuelve la factura a PENDIENTE
-      await dynamoDb.send(
-        new UpdateCommand({
-          TableName: "AqtivaChatDB",
-          Key: { PK: `INVOICE#${numero_documento}`, SK: "METADATA" },
-          UpdateExpression:
-            "SET estado = :nuevoEstado REMOVE voucher_conciliado",
-          ExpressionAttributeValues: { ":nuevoEstado": "PENDIENTE" },
-        }),
-      );
+    if (!audit_pk || !numero_documento) {
+        return NextResponse.json({ error: "Faltan datos de auditoría." }, { status: 400 });
     }
 
-    // 2. DEVOLVER VOUCHER A TRIAJE (Solo si NO fue manual)
-    if (
-      s3_key_voucher &&
-      s3_key_voucher !== "N/A" &&
-      tipo_accion !== "ADJUNTO_MANUAL"
-    ) {
-      const nombre_archivo = s3_key_voucher.split("/").pop();
-      await dynamoDb.send(
-        new UpdateCommand({
-          TableName: "AqtivaChatDB",
-          Key: { PK: `VOUCHER#${nombre_archivo}`, SK: "METADATA" },
-          UpdateExpression: "SET estado = :nuevoEstado",
-          ExpressionAttributeValues: { ":nuevoEstado": "PENDIENTE_REVISION" },
-        }),
-      );
-    }
+    // 1. Revertir la Factura (Devolver a PENDIENTE y quitar el voucher)
+    const invoicePK = factura_vinculada_pk || `INVOICE#${numero_documento}`;
+    await dynamoDb.send(new UpdateCommand({
+      TableName: "AqtivaChatDB",
+      Key: { PK: invoicePK, SK: "METADATA" },
+      UpdateExpression: "SET estado = :estado REMOVE voucher_conciliado",
+      ExpressionAttributeValues: { ":estado": "PENDIENTE" }
+    }));
 
-    // 3. Anular ticket original y 4. Crear ticket constancia (MANTÉN TU CÓDIGO ORIGINAL AQUÍ)
-    if (audit_pk) {
-      await dynamoDb.send(
-        new UpdateCommand({
-          TableName: "AqtivaChatDB",
-          Key: { PK: audit_pk, SK: "METADATA" },
-          UpdateExpression: "SET estado = :nuevoEstado",
-          ExpressionAttributeValues: { ":nuevoEstado": "REVERSADO" },
-        }),
-      );
-    }
+    // 2. Anular el ticket de auditoría original
+    await dynamoDb.send(new UpdateCommand({
+      TableName: "AqtivaChatDB",
+      Key: { PK: audit_pk, SK: "METADATA" },
+      UpdateExpression: "SET estado = :anulado",
+      ExpressionAttributeValues: { ":anulado": "ANULADO" }
+    }));
 
+    // 3. Crear el nuevo ticket de reversión
     const timestamp = new Date().toISOString();
-    await dynamoDb.send(
-      new PutCommand({
-        TableName: "AqtivaChatDB",
-        Item: {
-          PK: `AUDIT#${timestamp}#${numero_documento}#REV`,
-          SK: "METADATA",
-          tipo_accion: "REVERSION",
-          numero_documento: numero_documento,
-          voucher_vinculado: s3_key_voucher || "N/A",
-          fecha_registro: timestamp,
-          estado: "COMPLETADO",
-        },
-      }),
-    );
+    await dynamoDb.send(new PutCommand({
+      TableName: "AqtivaChatDB",
+      Item: {
+        PK: `AUDIT#${timestamp}#${numero_documento}#REV`,
+        SK: "METADATA",
+        tipo_accion: "REVERSION",
+        numero_documento: numero_documento,
+        factura_vinculada_pk: invoicePK,
+        fecha_registro: timestamp,
+        estado: "AUDITADO"
+      }
+    }));
 
-    return NextResponse.json({
-      success: true,
-      message: "Conciliación reversada con éxito.",
-    });
+    // 4. EL FIX DEL VOUCHER FANTASMA: Devolver el Voucher original a Triaje
+    if (voucher_vinculado && voucher_vinculado.includes("processed/")) {
+        // Reconstruimos la llave primaria original: Quitamos 'processed/' y '.json'
+        const baseName = voucher_vinculado.replace("processed/", "").replace(".json", "");
+        const voucherPK = `VOUCHER#${baseName}`;
+
+        // Al usar el PK correcto, conservará su RUC, candidatos, IA, etc.
+        await dynamoDb.send(new UpdateCommand({
+          TableName: "AqtivaChatDB",
+          Key: { PK: voucherPK, SK: "METADATA" },
+          UpdateExpression: "SET estado = :estado",
+          ExpressionAttributeValues: { ":estado": "PENDIENTE_REVISION" }
+        }));
+    }
+
+    return NextResponse.json({ success: true, message: "Reversión completada con éxito. El voucher ha vuelto a Triaje." });
   } catch (error: any) {
-    console.error("Error al reversar:", error);
-    return NextResponse.json(
-      { error: "Fallo interno al reversar la conciliación." },
-      { status: 500 },
-    );
+    console.error("Error en reversión:", error);
+    return NextResponse.json({ error: "Fallo interno al reversar el cobro." }, { status: 500 });
   }
 }

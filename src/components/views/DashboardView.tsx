@@ -18,34 +18,48 @@ ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarEle
 
 export default function DashboardView() {
   const [facturas, setFacturas] = useState<any[]>([]);
+  const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // 🚨 CORRECCIÓN: Obtenemos facturas y vouchers al mismo tiempo
   useEffect(() => {
-    fetch("/api/facturas")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) setFacturas(data.data);
+    Promise.all([
+      fetch("/api/facturas").then((res) => res.json()),
+      fetch("/api/vouchers").then((res) => res.json())
+    ])
+      .then(([facturasData, vouchersData]) => {
+        if (facturasData.success) setFacturas(facturasData.data);
+        if (vouchersData.success) setVouchers(vouchersData.data);
       })
-      .catch((err) => console.error("Error cargando facturas:", err))
+      .catch((err) => console.error("Error cargando datos del Dashboard:", err))
       .finally(() => setIsLoading(false));
   }, []);
 
-  // Cálculos de KPIs
+  // ==========================================
+  // CÁLCULOS DE KPIs
+  // ==========================================
   const totalFacturas = facturas.length;
   const facturasCobradas = facturas.filter(f => f.estado === "COBRADO");
   const facturasPendientes = facturas.filter(f => f.estado === "PENDIENTE");
-  const facturasEnRevision = facturas.filter(f => f.estado === "EN REVISIÓN");
+  
+  // 🚨 CORRECCIÓN: Filtramos los vouchers que están en el triaje
+  const vouchersEnTriaje = vouchers.filter(v => v.estado === "PENDIENTE_REVISION");
 
   const porcentajeCobrado = totalFacturas > 0 ? Math.round((facturasCobradas.length / totalFacturas) * 100) : 0;
 
+  // Cálculos Monetarios
   const dineroRecuperado = facturasCobradas.reduce((acc, f) => acc + Number(f.monto || 0), 0);
-  const dineroEnLimbo = [...facturasPendientes, ...facturasEnRevision].reduce((acc, f) => acc + Number(f.monto || 0), 0);
   const dineroPendientePuro = facturasPendientes.reduce((acc, f) => acc + Number(f.monto || 0), 0);
-  const dineroEnRevisionPuro = facturasEnRevision.reduce((acc, f) => acc + Number(f.monto || 0), 0);
+  
+  // Estimamos el dinero en triaje sumando los montos sugeridos por la IA
+  const dineroEnRevisionPuro = vouchersEnTriaje.reduce((acc, v) => {
+    const montoSugerido = v.conciliacion?.factura_sugerida?.monto_total || 0;
+    return acc + Number(montoSugerido);
+  }, 0);
 
-  // Top 5 Deudores
+  // Top 5 Deudores (Solo basado en facturas pendientes reales)
   const deudaPorCliente: Record<string, number> = {};
-  [...facturasPendientes, ...facturasEnRevision].forEach(f => {
+  facturasPendientes.forEach(f => {
     if (f.cliente) {
       deudaPorCliente[f.cliente] = (deudaPorCliente[f.cliente] || 0) + Number(f.monto || 0);
     }
@@ -60,12 +74,12 @@ export default function DashboardView() {
   // CONFIGURACIÓN DE GRÁFICOS (CHART.JS)
   // ==========================================
   
-  // Gráfico 1: Dona (Distribución por cantidad de documentos)
   const doughnutData = {
-    labels: ['Cobradas', 'Pendientes', 'En Revisión'],
+    labels: ['Cobradas', 'Pendientes', 'En Triaje'],
     datasets: [
       {
-        data: [facturasCobradas.length, facturasPendientes.length, facturasEnRevision.length],
+        // 🚨 CORRECCIÓN: Inyectamos la longitud de los vouchers en triaje
+        data: [facturasCobradas.length, facturasPendientes.length, vouchersEnTriaje.length],
         backgroundColor: ['#10B981', '#F59E0B', '#6366F1'],
         hoverBackgroundColor: ['#059669', '#D97706', '#4F46E5'],
         borderWidth: 0,
@@ -77,12 +91,11 @@ export default function DashboardView() {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { position: 'bottom', labels: { usePointStyle: true, padding: 20 } }
+      legend: { position: 'bottom' as const, labels: { usePointStyle: true, padding: 20 } }
     },
     cutout: '70%',
   };
 
-  // Gráfico 2: Barras (Distribución de flujo de caja)
   const barData = {
     labels: ['Flujo Recuperado', 'Por Cobrar', 'En Triaje'],
     datasets: [
@@ -95,7 +108,6 @@ export default function DashboardView() {
     ],
   };
 
-  // 🚨 CORRECCIÓN: Agregamos ": any" aquí también
   const barOptions: any = {
     responsive: true,
     maintainAspectRatio: false,
@@ -150,7 +162,7 @@ export default function DashboardView() {
             </div>
           </div>
           <p className="text-sm text-gray-600 mt-4 font-medium flex items-center gap-1">
-             <span className="font-bold text-green-700">S/ {dineroRecuperado.toLocaleString('en-US')}</span> recuperados
+             <span className="font-bold text-green-700">S/ {dineroRecuperado.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> recuperados
           </p>
         </div>
 
@@ -165,7 +177,7 @@ export default function DashboardView() {
             </div>
           </div>
           <p className="text-sm text-gray-600 mt-4 font-medium flex items-center gap-1">
-             <span className="font-bold text-amber-600">S/ {dineroEnLimbo.toLocaleString('en-US')}</span> por cobrar
+             <span className="font-bold text-amber-600">S/ {dineroPendientePuro.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> por cobrar
           </p>
         </div>
 
@@ -173,14 +185,15 @@ export default function DashboardView() {
           <div className="flex justify-between items-start">
             <div>
               <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">En Triaje (Revisión)</p>
-              <h3 className="text-3xl font-black text-indigo-500 mt-1">{facturasEnRevision.length}</h3>
+              {/* 🚨 CORRECCIÓN: Pintamos la cantidad exacta de vouchers */}
+              <h3 className="text-3xl font-black text-indigo-500 mt-1">{vouchersEnTriaje.length}</h3>
             </div>
             <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-500">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
             </div>
           </div>
           <p className="text-sm text-gray-600 mt-4 font-medium flex items-center gap-1">
-             Faltan conciliar con IA
+             <span className="font-bold text-indigo-600">~ S/ {dineroEnRevisionPuro.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> sugeridos
           </p>
         </div>
       </div>
@@ -192,15 +205,15 @@ export default function DashboardView() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
           <h2 className="text-lg font-bold text-gray-800 mb-6">Estado de Documentos</h2>
           <div className="flex-1 relative min-h-[250px]">
-            {totalFacturas > 0 ? (
+            {totalFacturas > 0 || vouchersEnTriaje.length > 0 ? (
               <Doughnut data={doughnutData} options={doughnutOptions} />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400">Sin datos</div>
             )}
           </div>
           <div className="mt-4 text-center">
-            <p className="text-2xl font-black text-gray-900">{totalFacturas}</p>
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">Facturas Totales</p>
+            <p className="text-2xl font-black text-gray-900">{totalFacturas + vouchersEnTriaje.length}</p>
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">Documentos Totales en Sistema</p>
           </div>
         </div>
 
@@ -208,7 +221,7 @@ export default function DashboardView() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
           <h2 className="text-lg font-bold text-gray-800 mb-6">Distribución de Flujo (S/)</h2>
           <div className="flex-1 relative min-h-[250px]">
-            {totalFacturas > 0 ? (
+            {totalFacturas > 0 || vouchersEnTriaje.length > 0 ? (
               <Bar data={barData} options={barOptions} />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400">Sin datos</div>
@@ -227,16 +240,16 @@ export default function DashboardView() {
               <p>No hay deudas pendientes registradas.</p>
             </div>
           ) : (
-            <ul className="divide-y divide-gray-100">
+            <ul className="divide-y divide-gray-100 overflow-y-auto">
               {topDeudores.map((deudor, idx) => (
                 <li key={idx} className="p-4 hover:bg-gray-50 flex items-center justify-between transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded bg-red-50 text-red-600 font-bold flex items-center justify-center text-xs border border-red-100">
+                    <div className="w-8 h-8 rounded bg-red-50 text-red-600 font-bold flex items-center justify-center text-xs border border-red-100 shrink-0">
                       {idx + 1}
                     </div>
-                    <span className="font-bold text-gray-800 text-sm truncate max-w-[150px]">{deudor.cliente}</span>
+                    <span className="font-bold text-gray-800 text-sm truncate max-w-[150px]" title={deudor.cliente}>{deudor.cliente}</span>
                   </div>
-                  <span className="font-mono font-bold text-red-600 bg-red-50 px-2 py-1 rounded">
+                  <span className="font-mono font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap">
                     S/ {deudor.monto.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                   </span>
                 </li>

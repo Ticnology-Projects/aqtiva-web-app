@@ -83,7 +83,6 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
   const [voucherImageUrl, setVoucherImageUrl] = useState<string | null>(null);
   const [isLoadingImage, setIsLoadingImage] = useState(false);
   
-  // NUEVO ESTADO: Alternar entre imagen y Reporte IA
   const [activeTab, setActiveTab] = useState<"VISOR" | "ANALISIS">("VISOR");
 
   const [isSearchingManual, setIsSearchingManual] = useState(false);
@@ -110,16 +109,21 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
   const isPdf = voucher.fileName?.toLowerCase().endsWith('.pdf') || voucherImageUrl?.toLowerCase().includes('.pdf');
   const nombreEmpresaVoucher = empresas.find((e: any) => e.ruc === voucher.empresa_emisora_ruc)?.nombreOriginal || voucher.empresa_emisora_ruc || "Empresa Desconocida";
 
+  // 🚨 NUEVO: Ahora extraemos la Fecha de Emisión del string de la Knowledge Base
   const parseCandidato = (contenido: string) => {
     const docMatch = contenido.match(/Documento:\s*(.+?)(?=\s*Cliente:|$)/);
     const clienteMatch = contenido.match(/Cliente:\s*(.+?)(?=\s*RUC Cliente:|$)/);
     const montoMatch = contenido.match(/Monto Total:\s*(.+?)(?=\s*Moneda:|$)/);
+    const fechaMatch = contenido.match(/Fecha Emisión:\s*(\S+)/); // Captura el DD/MM/AAAA al final
+    
     const numDoc = docMatch ? docMatch[1].trim() : "Desconocido";
+
     return {
       PK: `INVOICE#${voucher.empresa_emisora_ruc}#${numDoc}`,
       numero_documento: numDoc,
       cliente: clienteMatch ? clienteMatch[1].trim() : "---",
-      monto_total: montoMatch ? montoMatch[1].trim() : "0.00"
+      monto_total: montoMatch ? montoMatch[1].trim() : "0.00",
+      fecha_emision: fechaMatch ? fechaMatch[1].trim() : "---" // <- FECHA EXTRAÍDA
     };
   };
 
@@ -169,7 +173,6 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
           {/* ================= COLUMNA IZQUIERDA (Pestañas Dinámicas) ================= */}
           <div className="w-full lg:w-[45%] bg-gray-100 border-r border-gray-200 flex flex-col relative overflow-hidden">
             
-            {/* Cabecera de Pestañas */}
             <div className="flex bg-gray-200/50 p-2 shrink-0 gap-2 border-b border-gray-300">
               <button 
                 onClick={() => setActiveTab("VISOR")} 
@@ -186,7 +189,6 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
               </button>
             </div>
 
-            {/* Contenido Dinámico */}
             <div className="flex-1 p-4 overflow-hidden relative">
               {activeTab === "VISOR" ? (
                 <div className="w-full h-full bg-white rounded-xl border border-gray-300 overflow-hidden flex items-center justify-center relative shadow-inner">
@@ -233,8 +235,11 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
                   <div>
                     <span className="text-xs font-bold text-gray-500 uppercase block mb-1">Documento Seleccionado</span>
                     <span className="text-2xl font-bold text-indigo-700 font-mono">{voucher.conciliacion.factura_sugerida.numero_documento}</span>
-                    <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">🏢 {nombreEmpresaVoucher}</p>
-                    <p className="text-sm font-medium text-gray-800">{voucher.conciliacion.factura_sugerida.cliente}</p>
+                    {/* 🚨 NUEVO: Muestra fecha de emisión en la sugerencia */}
+                    <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">
+                      🏢 {nombreEmpresaVoucher} <span className="text-gray-300 mx-1">|</span> 📅 Emisión: {voucher.conciliacion.factura_sugerida.fecha_emision || "N/A"}
+                    </p>
+                    <p className="text-sm font-medium text-gray-800 mt-1">{voucher.conciliacion.factura_sugerida.cliente}</p>
                   </div>
                   <div className="text-right">
                     <span className="text-xs font-bold text-gray-500 uppercase block mb-1">Monto Detectado</span>
@@ -269,8 +274,11 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
                               {isSuggested && !isManual && <span className="bg-indigo-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold uppercase">Sugerido</span>}
                               {isManual && <span className="bg-green-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold uppercase">Seleccionado</span>}
                             </div>
-                            <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">🏢 {nombreEmpresaVoucher}</p>
-                            <p className="text-sm text-gray-600">{parsed.cliente}</p>
+                            {/* 🚨 NUEVO: Muestra fecha de emisión en la lista de candidatos KB */}
+                            <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">
+                              🏢 {nombreEmpresaVoucher} <span className="text-gray-300 mx-1">|</span> 📅 Emisión: {parsed.fecha_emision}
+                            </p>
+                            <p className="text-sm text-gray-600 mt-1">{parsed.cliente}</p>
                           </div>
                           <div className="text-right">
                             <p className="font-bold text-lg">S/ {parsed.monto_total}</p>
@@ -312,8 +320,11 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
                                     <h5 className={`font-bold text-sm ${isSelected ? "text-green-900" : "text-gray-800"}`}>{f.numero_documento}</h5>
                                     {isSelected && <span className="bg-green-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold uppercase">Seleccionado</span>}
                                   </div>
-                                  <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">🏢 {f.empresa_emisora_nombre}</p>
-                                  <p className="text-xs text-gray-600 mt-0.5 truncate max-w-[200px]">{f.cliente}</p>
+                                  {/* 🚨 NUEVO: Muestra fecha de emisión en la Búsqueda Manual */}
+                                  <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">
+                                    🏢 {f.empresa_emisora_nombre} <span className="text-gray-300 mx-1">|</span> 📅 Emisión: {f.fecha_emision || "N/A"}
+                                  </p>
+                                  <p className="text-xs text-gray-600 mt-1 truncate max-w-[200px]">{f.cliente}</p>
                                 </div>
                                 <div className="text-right">
                                   <p className="font-bold text-sm text-gray-900">S/ {f.monto}</p>

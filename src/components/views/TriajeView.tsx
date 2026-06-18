@@ -101,7 +101,13 @@ export default function TriajeView() {
     }
   };
 
-  const vouchersPorEmpresa = vouchers.filter(v => !empresaFiltro || v.empresa_emisora_ruc === empresaFiltro);
+  const userRucs = new Set(empresas.map(e => e.ruc));
+
+  const vouchersPorEmpresa = vouchers.filter(v => {
+      if (!userRucs.has(v.empresa_emisora_ruc)) return false; // Bloqueo de seguridad
+      if (empresaFiltro && v.empresa_emisora_ruc !== empresaFiltro) return false;
+      return true;
+  });
 
   const metricas = {
     altos: vouchersPorEmpresa.filter(v => v.conciliacion?.nivel_confianza === "ALTO").length,

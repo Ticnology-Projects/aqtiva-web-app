@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useSession } from "next-auth/react"; // 🚨 1. Importar la sesión
 
 // ==========================================
 // 1. REPORTE LEGIBLE DE IA PARA HUMANOS
 // ==========================================
 const ReporteIAHumano = ({ data }: { data: any }) => {
-  // Manejo de seguridad en caso de que venga como String desde DynamoDB
   let d = data;
   if (typeof d === "string") {
     try { d = JSON.parse(d); } catch (e) {}
@@ -20,7 +20,6 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
     );
   }
 
-  // Extraer valores seguros si vienen con el formato estricto de DynamoDB {"S": "..."}
   const getVal = (field: any) => field?.S || field?.N || field;
   const getArray = (field: any) => {
     if (Array.isArray(field)) return field;
@@ -42,7 +41,6 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
 
   return (
     <div className="space-y-6 text-gray-800">
-      
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center">
           <span className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Confianza IA</span>
@@ -186,6 +184,9 @@ const VoucherCard = ({ voucher, onVerDatos, onAbrirOriginal, isSelected, onToggl
 // 3. VISTA PRINCIPAL (BOVEDA)
 // ==========================================
 export default function BovedaView() {
+  const { data: session } = useSession(); // 🚨 2. Obtenemos el usuario activo
+  
+  const [empresas, setEmpresas] = useState<any[]>([]); // 🚨 3. Declaramos el estado de empresas
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -207,7 +208,16 @@ export default function BovedaView() {
       .finally(() => setIsLoading(false));
   };
 
-  useEffect(() => { fetchTodosLosVouchers(); }, []);
+  useEffect(() => { 
+    if (!session?.user?.email) return;
+
+    // 🚨 4. Cargamos las empresas de la base de datos para aislar la vista
+    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setEmpresas(data.data); });
+
+    fetchTodosLosVouchers(); 
+  }, [session]);
 
   const handleAbrirOriginal = async (s3_key: string) => {
     if (!s3_key) return;
@@ -251,7 +261,11 @@ export default function BovedaView() {
     finally { setIsDeleting(false); }
   };
 
+  // 🚨 5. Le decimos a TypeScript que 'e' es de tipo any
+  const userRucs = new Set(empresas.map((e: any) => e.ruc));
+
   const filteredVouchers = vouchers.filter((v) => {
+    if (!userRucs.has(v.empresa_emisora_ruc)) return false;
     const term = searchTerm.toLowerCase();
     const matchSearch = !term || v.fileName?.toLowerCase().includes(term);
     const matchEstado = estadoFiltro === "TODOS" || v.estado === estadoFiltro;

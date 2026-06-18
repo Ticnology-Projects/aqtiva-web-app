@@ -110,7 +110,8 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
               factura_pk: conciliacion.factura_sugerida.PK, 
               numero_documento: conciliacion.factura_sugerida.numero_documento, 
               s3_key_voucher: processedS3Key, 
-              PK_Voucher: voucherPK 
+              PK_Voucher: voucherPK,
+              es_automatico: true
             })
           });
 

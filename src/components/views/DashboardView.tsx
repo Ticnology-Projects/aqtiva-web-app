@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useSession } from "next-auth/react"; // 🚨 1. Importamos la sesión
 import {
   Chart as ChartJS,
   ArcElement,
@@ -17,47 +18,54 @@ import { Doughnut, Bar } from "react-chartjs-2";
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
 
 export default function DashboardView() {
+  const { data: session } = useSession(); // 🚨 2. Obtenemos el usuario activo
+  
+  const [empresas, setEmpresas] = useState<any[]>([]); // 🚨 3. Declaramos el estado de empresas
   const [facturas, setFacturas] = useState<any[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // 🚨 CORRECCIÓN: Obtenemos facturas y vouchers al mismo tiempo
   useEffect(() => {
+    if (!session?.user?.email) return;
+
+    // 🚨 4. Cargamos las facturas, vouchers Y EMPRESAS al mismo tiempo
     Promise.all([
       fetch("/api/facturas").then((res) => res.json()),
-      fetch("/api/vouchers").then((res) => res.json())
+      fetch("/api/vouchers").then((res) => res.json()),
+      fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`).then((res) => res.json())
     ])
-      .then(([facturasData, vouchersData]) => {
+      .then(([facturasData, vouchersData, empresasData]) => {
         if (facturasData.success) setFacturas(facturasData.data);
         if (vouchersData.success) setVouchers(vouchersData.data);
+        if (empresasData.success) setEmpresas(empresasData.data);
       })
       .catch((err) => console.error("Error cargando datos del Dashboard:", err))
       .finally(() => setIsLoading(false));
-  }, []);
+  }, [session]);
+
+  // 🚨 5. Le decimos a TypeScript que 'e' es de tipo any
+  const userRucs = new Set(empresas.map((e: any) => e.ruc));
+  const misFacturas = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
+  const misVouchers = vouchers.filter(v => userRucs.has(v.empresa_emisora_ruc));
 
   // ==========================================
   // CÁLCULOS DE KPIs
   // ==========================================
-  const totalFacturas = facturas.length;
-  const facturasCobradas = facturas.filter(f => f.estado === "COBRADO");
-  const facturasPendientes = facturas.filter(f => f.estado === "PENDIENTE");
-  
-  // 🚨 CORRECCIÓN: Filtramos los vouchers que están en el triaje
-  const vouchersEnTriaje = vouchers.filter(v => v.estado === "PENDIENTE_REVISION");
+  const totalFacturas = misFacturas.length;
+  const facturasCobradas = misFacturas.filter(f => f.estado === "COBRADO");
+  const facturasPendientes = misFacturas.filter(f => f.estado === "PENDIENTE");
+  const vouchersEnTriaje = misVouchers.filter(v => v.estado === "PENDIENTE_REVISION")
 
   const porcentajeCobrado = totalFacturas > 0 ? Math.round((facturasCobradas.length / totalFacturas) * 100) : 0;
 
-  // Cálculos Monetarios
   const dineroRecuperado = facturasCobradas.reduce((acc, f) => acc + Number(f.monto || 0), 0);
   const dineroPendientePuro = facturasPendientes.reduce((acc, f) => acc + Number(f.monto || 0), 0);
   
-  // Estimamos el dinero en triaje sumando los montos sugeridos por la IA
   const dineroEnRevisionPuro = vouchersEnTriaje.reduce((acc, v) => {
     const montoSugerido = v.conciliacion?.factura_sugerida?.monto_total || 0;
     return acc + Number(montoSugerido);
   }, 0);
 
-  // Top 5 Deudores (Solo basado en facturas pendientes reales)
   const deudaPorCliente: Record<string, number> = {};
   facturasPendientes.forEach(f => {
     if (f.cliente) {
@@ -78,7 +86,6 @@ export default function DashboardView() {
     labels: ['Cobradas', 'Pendientes', 'En Triaje'],
     datasets: [
       {
-        // 🚨 CORRECCIÓN: Inyectamos la longitud de los vouchers en triaje
         data: [facturasCobradas.length, facturasPendientes.length, vouchersEnTriaje.length],
         backgroundColor: ['#10B981', '#F59E0B', '#6366F1'],
         hoverBackgroundColor: ['#059669', '#D97706', '#4F46E5'],
@@ -133,7 +140,6 @@ export default function DashboardView() {
         <p className="text-gray-500 mt-1">Métricas de conciliación y cuentas por cobrar en tiempo real.</p>
       </div>
 
-      {/* TARJETAS DE KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-center">
           <div className="flex justify-between items-start mb-4">
@@ -185,7 +191,6 @@ export default function DashboardView() {
           <div className="flex justify-between items-start">
             <div>
               <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">En Triaje (Revisión)</p>
-              {/* 🚨 CORRECCIÓN: Pintamos la cantidad exacta de vouchers */}
               <h3 className="text-3xl font-black text-indigo-500 mt-1">{vouchersEnTriaje.length}</h3>
             </div>
             <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-500">
@@ -198,10 +203,7 @@ export default function DashboardView() {
         </div>
       </div>
 
-      {/* SECCIÓN DE GRÁFICOS Y DEUDORES */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* GRÁFICO 1: Estado de Documentos */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
           <h2 className="text-lg font-bold text-gray-800 mb-6">Estado de Documentos</h2>
           <div className="flex-1 relative min-h-[250px]">
@@ -217,7 +219,6 @@ export default function DashboardView() {
           </div>
         </div>
 
-        {/* GRÁFICO 2: Distribución de Flujo */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
           <h2 className="text-lg font-bold text-gray-800 mb-6">Distribución de Flujo (S/)</h2>
           <div className="flex-1 relative min-h-[250px]">
@@ -229,7 +230,6 @@ export default function DashboardView() {
           </div>
         </div>
 
-        {/* TOP 5 DEUDORES */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-0 overflow-hidden flex flex-col">
           <div className="p-6 border-b border-gray-100 bg-gray-50">
             <h2 className="text-lg font-bold text-gray-800">Top 5 Deudores (Críticos)</h2>

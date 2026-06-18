@@ -20,17 +20,16 @@ export function ExcelUploader() {
 
   // 1. Cargar las empresas del usuario al inicio
   useEffect(() => {
-    fetch("/api/empresas")
+    if (!session?.user?.email) return; // 🚨 Aseguramos que exista la sesión
+    
+    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
       .then(res => res.json())
       .then(data => {
-        if (data.success) {
-          // Si el backend ya filtra por usuario, tomamos la data
-          setEmpresas(data.data);
-        }
+        if (data.success) setEmpresas(data.data);
       })
       .catch(err => console.error("Error cargando empresas:", err))
       .finally(() => setIsLoadingEmpresas(false));
-  }, []);
+  }, [session]);
 
   // Manejo de Drag & Drop
   const handleDragOver = useCallback((e: React.DragEvent) => {

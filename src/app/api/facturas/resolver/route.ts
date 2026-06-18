@@ -4,21 +4,26 @@ import { dynamoDb } from "@/lib/dynamodb";
 
 export async function POST(req: Request) {
   try {
-    // 🚨 NUEVO: Recibimos el factura_pk exacto
-    const { factura_pk, numero_documento, s3_key_voucher, PK_Voucher } = await req.json();
+    // 🚨 NUEVO: Recibimos la bandera "es_automatico"
+    const { factura_pk, numero_documento, s3_key_voucher, PK_Voucher, es_automatico } = await req.json();
 
     if (!factura_pk || !numero_documento) {
       return NextResponse.json({ error: "El PK y número de documento son obligatorios." }, { status: 400 });
     }
 
-    // 1. Cobrar la Factura usando la llave compuesta
+    // Definimos los sellos dependiendo de quién hizo la acción
+    const metodoResolucion = es_automatico ? "AUTOMATICO_IA" : "MANUAL";
+    const tipoAccionAudit = es_automatico ? "AUTO_CONCILIACION" : "CONCILIACION";
+
+    // 1. Cobrar la Factura y ponerle el sello de quién la cobró
     await dynamoDb.send(new UpdateCommand({
       TableName: "AqtivaChatDB", 
       Key: { PK: factura_pk, SK: "METADATA" },
-      UpdateExpression: "SET estado = :nuevoEstado, voucher_conciliado = :voucher",
+      UpdateExpression: "SET estado = :nuevoEstado, voucher_conciliado = :voucher, metodo_resolucion = :metodo",
       ExpressionAttributeValues: {
         ":nuevoEstado": "COBRADO",
-        ":voucher": s3_key_voucher || "Asignación Manual"
+        ":voucher": s3_key_voucher || "Asignación Manual",
+        ":metodo": metodoResolucion
       }
     }));
 
@@ -32,17 +37,16 @@ export async function POST(req: Request) {
       }));
     }
 
-    // 3. CREAR EL TICKET DE AUDITORÍA
+    // 3. CREAR EL TICKET DE AUDITORÍA CON EL SELLO EXACTO
     const timestamp = new Date().toISOString();
     await dynamoDb.send(new PutCommand({
       TableName: "AqtivaChatDB",
       Item: {
-        // La auditoría puede mantener esta llave simple para historial cronológico
         PK: `AUDIT#${timestamp}#${numero_documento}`,
         SK: "METADATA",
-        tipo_accion: "CONCILIACION",
+        tipo_accion: tipoAccionAudit,
         numero_documento: numero_documento,
-        factura_vinculada_pk: factura_pk, // Guardamos referencia a la factura exacta
+        factura_vinculada_pk: factura_pk, 
         voucher_vinculado: s3_key_voucher || "N/A",
         fecha_registro: timestamp,
         estado: "AUDITADO"

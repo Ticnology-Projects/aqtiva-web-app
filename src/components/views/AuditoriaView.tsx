@@ -1,28 +1,122 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useSession } from "next-auth/react"; // 🚨 Agregamos la sesión
+
+// ==========================================
+// COMPONENTE: REPORTE LEGIBLE DE IA
+// ==========================================
+const ReporteIAHumano = ({ data }: { data: any }) => {
+  let d = data;
+  if (typeof d === "string") { try { d = JSON.parse(d); } catch (e) {} }
+
+  if (!d || !d.nivel_confianza) {
+    return <div className="bg-gray-900 text-green-400 p-4 rounded-xl text-xs overflow-auto font-mono"><pre>{JSON.stringify(d, null, 2)}</pre></div>;
+  }
+
+  const getVal = (field: any) => field?.S || field?.N || field;
+  const getArray = (field: any) => {
+    if (Array.isArray(field)) return field;
+    if (field?.L) return field.L.map((item: any) => getVal(item));
+    return [];
+  };
+
+  const nivel = getVal(d.nivel_confianza);
+  const score = getVal(d.score_kb);
+  const justificacion = getVal(d.justificacion);
+  const coincidentes = getArray(d.campos_coincidentes);
+  const discrepantes = getArray(d.campos_discrepantes);
+
+  return (
+    <div className="space-y-5 text-gray-800 animate-fadeIn h-full overflow-y-auto pr-2 pb-8">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-col items-center justify-center shadow-sm">
+          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Confianza IA</span>
+          <span className={`text-xl font-black ${nivel === 'ALTO' ? 'text-green-600' : nivel === 'AMBIGUO' ? 'text-amber-500' : 'text-red-500'}`}>{nivel}</span>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-col items-center justify-center shadow-sm">
+          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Score BD</span>
+          <span className="text-xl font-black text-indigo-600 font-mono">{Number(score || 0).toFixed(4)}</span>
+        </div>
+      </div>
+      <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4 shadow-sm">
+        <h4 className="text-xs font-bold text-indigo-800 uppercase tracking-widest mb-2 flex items-center gap-2">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          Razonamiento del Algoritmo
+        </h4>
+        <p className="text-sm text-indigo-900 leading-relaxed font-medium">{justificacion}</p>
+      </div>
+      <div className="grid grid-cols-1 gap-4 pt-2">
+        <div>
+          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1">
+            <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+            Campos Coincidentes
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {coincidentes.length > 0 ? coincidentes.map((c: string, i: number) => (
+              <span key={i} className="bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase">{c.replace(/_/g, ' ')}</span>
+            )) : <span className="text-xs text-gray-400">Ninguno detectado</span>}
+          </div>
+        </div>
+        <div className="mt-2">
+          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1">
+            <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            Campos Discrepantes
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {discrepantes.length > 0 ? discrepantes.map((c: string, i: number) => (
+              <span key={i} className="bg-red-50 border border-red-200 text-red-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase">{c.replace(/_/g, ' ')}</span>
+            )) : <span className="text-xs text-gray-400">Ninguno detectado</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default function AuditoriaView() {
+  const { data: session } = useSession(); // 🚨 Obtenemos la sesión actual
+  const [empresas, setEmpresas] = useState<any[]>([]); // 🚨 Estado para empresas
   const [auditorias, setAuditorias] = useState<any[]>([]);
+  const [vouchers, setVouchers] = useState<any[]>([]); // 🚨 Estado para almacenar los vouchers y ver la IA
   const [isLoadingAuditoria, setIsLoadingAuditoria] = useState(false);
   
+  // NUEVO: Estado para el modal de detalle de IA
+  const [auditParaVerIA, setAuditParaVerIA] = useState<any | null>(null);
+
   // NUEVO: Estado para el buscador
   const [searchTerm, setSearchTerm] = useState("");
+  const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
 
   const fetchAuditoria = () => {
     setIsLoadingAuditoria(true);
-    fetch("/api/auditoria")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) setAuditorias(data.data);
+    // Traemos ambos para que al dar clic al documento tengamos la IA lista
+    Promise.all([
+      fetch("/api/auditoria").then(res => res.json()),
+      fetch("/api/vouchers/all").then(res => res.json())
+    ])
+      .then(([dataAud, dataVou]) => {
+        if (dataAud.success) setAuditorias(dataAud.data);
+        if (dataVou.success) setVouchers(dataVou.data);
       })
       .catch((err) => console.error("Error cargando auditoría:", err))
       .finally(() => setIsLoadingAuditoria(false));
   };
 
+  // 🚨 AISLAMIENTO: Cargamos empresas del usuario primero y luego auditorías
   useEffect(() => {
-    fetchAuditoria();
-  }, []);
+    if (!session?.user?.email) return;
+
+    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+      .then(res => res.json())
+      .then(dataEmp => {
+        if (dataEmp.success) {
+          setEmpresas(dataEmp.data);
+          fetchAuditoria(); 
+        }
+      })
+      .catch(err => console.error("Error cargando empresas:", err));
+  }, [session]);
 
   const handleReversar = async (audit: any) => {
     const msg = audit.tipo_accion === "ADJUNTO_MANUAL"
@@ -79,7 +173,15 @@ export default function AuditoriaView() {
 
   const handleExportarBackup = () => {
     const cabeceras = ["Fecha y Hora", "ID Ticket", "Documento", "Voucher", "Estado", "Acción"];
-    const filas = auditorias.map(audit => [
+    
+    // 🚨 AISLAMIENTO EN EXPORTACIÓN: Filtramos el CSV también
+    const userRucs = new Set(empresas.map((e: any) => e.ruc));
+    const auditoriasDelUsuario = auditorias.filter(audit => {
+      const rucTicket = audit.empresa_emisora_ruc || (audit.factura_vinculada_pk ? audit.factura_vinculada_pk.split('#')[1] : null);
+      return rucTicket && userRucs.has(rucTicket);
+    });
+
+    const filas = auditoriasDelUsuario.map(audit => [
       new Date(audit.fecha_registro).toLocaleString('es-PE'),
       audit.PK.replace("AUDIT#", ""),
       audit.numero_documento,
@@ -99,8 +201,36 @@ export default function AuditoriaView() {
     document.body.removeChild(link);
   };
 
-  // NUEVO: Lógica de filtrado
+  // 🚨 NUEVA FUNCIÓN: Abre el modal cruzando los datos
+  const handleVerDetalle = (audit: any) => {
+    if (!audit.voucher_vinculado) {
+      alert("Esta conciliación fue estrictamente manual sin voucher asociado.");
+      return;
+    }
+    const voucherEncontrado = vouchers.find(v => v.s3_key === audit.voucher_vinculado);
+    if (voucherEncontrado && voucherEncontrado.conciliacion) {
+      setAuditParaVerIA({
+        ...voucherEncontrado.conciliacion,
+        _fileName: voucherEncontrado.fileName
+      });
+    } else {
+      alert("Este registro no cuenta con un análisis de Inteligencia Artificial disponible.");
+    }
+  };
+
+  // 🚨 LÓGICA DE FILTRADO COMBINADO (Mantiene TUS reglas de origen intactas)
+  const userRucs = new Set(empresas.map((e: any) => e.ruc));
+
   const filteredAuditorias = auditorias.filter(audit => {
+    // 🚨 Aislamiento Inteligente: Busca el RUC en la empresa emisora o lo extrae de la PK
+    const rucTicket = audit.empresa_emisora_ruc || (audit.factura_vinculada_pk ? audit.factura_vinculada_pk.split('#')[1] : null);
+    if (!rucTicket || !userRucs.has(rucTicket)) return false;
+
+    // 1. Filtro de Pestañas (TUS REGLAS ORIGINALES)
+    if (filtroOrigen === "AUTO_IA" && audit.tipo_accion !== "AUTO_CONCILIACION") return false;
+    if (filtroOrigen === "MANUAL" && (audit.tipo_accion === "AUTO_CONCILIACION" || audit.tipo_accion === "REVERSION")) return false;
+
+    // 2. Filtro de Búsqueda (TUS REGLAS ORIGINALES)
     if (!searchTerm) return true;
     const term = searchTerm.toLowerCase();
     const idStr = audit.PK.replace("AUDIT#", "").toLowerCase();
@@ -119,20 +249,18 @@ export default function AuditoriaView() {
           <p className="text-gray-500 mt-1">Registro inmutable de todas las facturas procesadas y pagadas.</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={fetchAuditoria} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm flex items-center gap-2">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          <button onClick={fetchAuditoria} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-50 transition-colors shadow-sm flex items-center gap-2">
             Refrescar Historial
           </button>
           <button onClick={handleExportarBackup} className="bg-indigo-50 border border-indigo-200 text-indigo-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-100 transition-colors shadow-sm flex items-center gap-2">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
             Exportar Backup (CSV)
           </button>
         </div>
       </div>
 
-      {/* NUEVO: Buscador Simple */}
-      <div className="mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-        <div className="relative w-full">
+      <div className="mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col md:flex-row gap-4 justify-between items-center">
+        
+        <div className="relative w-full md:flex-1">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
           </div>
@@ -144,6 +272,18 @@ export default function AuditoriaView() {
             className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg leading-5 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 text-sm outline-none transition-all" 
           />
         </div>
+
+        {/* Pestañas de Filtro */}
+        <div className="flex bg-gray-100 p-1 rounded-lg w-full md:w-auto shrink-0">
+          <button onClick={() => setFiltroOrigen("TODOS")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 md:flex-none ${filtroOrigen === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500 hover:text-gray-700"}`}>Todos</button>
+          <button onClick={() => setFiltroOrigen("AUTO_IA")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center justify-center gap-1 flex-1 md:flex-none ${filtroOrigen === "AUTO_IA" ? "bg-indigo-100 text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+            🤖 Auto IA
+          </button>
+          <button onClick={() => setFiltroOrigen("MANUAL")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center justify-center gap-1 flex-1 md:flex-none ${filtroOrigen === "MANUAL" ? "bg-white shadow-sm text-gray-800" : "text-gray-500 hover:text-gray-700"}`}>
+            👤 Manual
+          </button>
+        </div>
+
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -169,7 +309,7 @@ export default function AuditoriaView() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredAuditorias.map((audit, idx) => {
                   const fechaFormat = new Date(audit.fecha_registro).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' });
-                  const voucherName = audit.voucher_vinculado ? audit.voucher_vinculado.split('/').pop().replace(".json", "") : "Asignación Manual";
+                  const voucherName = audit.voucher_vinculado ? audit.voucher_vinculado.split('/').pop() : "Manual";
 
                   return (
                     <tr key={idx} className={`hover:bg-gray-50 transition-colors ${audit.estado === "ANULADO" ? "opacity-60" : ""}`}>
@@ -180,7 +320,14 @@ export default function AuditoriaView() {
                         </span>
                       </td>
                       <td className={`px-6 py-4 font-bold ${audit.estado === "ANULADO" ? "text-gray-500 line-through" : "text-indigo-700"}`}>
-                        {audit.numero_documento}
+                        {/* 🚨 AQUÍ EL TEXTO SE CONVIERTE EN BOTÓN INTERACTIVO */}
+                        <button 
+                          onClick={() => handleVerDetalle(audit)}
+                          className="focus:outline-none text-left hover:underline hover:text-indigo-900 transition-colors"
+                          title="Ver el reporte de Inteligencia Artificial asociado"
+                        >
+                          {audit.numero_documento}
+                        </button>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
@@ -198,12 +345,13 @@ export default function AuditoriaView() {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-2">
-                          {/* 🚨 CORRECCIÓN: Se oculta el botón si el documento es VOUCHER */}
-                          {audit.estado === "AUDITADO" && audit.tipo_accion !== "REVERSION" && audit.numero_documento !== "VOUCHER" && (
+                          {/* El botón de reversar existente */}
+                          {audit.estado === "AUDITADO" && audit.tipo_accion !== "REVERSION" && (
                             <button onClick={() => handleReversar(audit)} className="text-red-600 hover:text-red-900 font-semibold text-xs border border-red-200 hover:border-red-400 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-colors">
                               Reversar
                             </button>
                           )}
+                          {/* EL NUEVO BOTÓN DE ELIMINAR */}
                           <button onClick={() => handleEliminarAuditoria(audit)} className="text-gray-500 hover:text-gray-800 font-semibold text-xs border border-gray-200 hover:border-gray-400 bg-white hover:bg-gray-100 px-3 py-1.5 rounded transition-colors" title="Borrar registro permanentemente">
                             Borrar
                           </button>
@@ -217,6 +365,27 @@ export default function AuditoriaView() {
           </div>
         )}
       </div>
+
+      {/* 🚨 MODAL DEL REPORTE IA (Se activa al dar clic en el nombre de la factura) */}
+      {auditParaVerIA && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setAuditParaVerIA(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100 bg-gray-50 shrink-0">
+              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                🤖 Detalles del Análisis IA
+              </h2>
+              <button onClick={() => setAuditParaVerIA(null)} className="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div className="p-6 overflow-y-auto flex-1 bg-white custom-scrollbar">
+              {auditParaVerIA._fileName && (
+                <p className="text-sm font-mono text-gray-500 mb-4 bg-gray-100 p-2 rounded truncate">Comprobante de origen: {auditParaVerIA._fileName}</p>
+              )}
+              <ReporteIAHumano data={auditParaVerIA} />
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

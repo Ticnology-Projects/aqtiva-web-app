@@ -4,8 +4,8 @@ import { dynamoDb } from "@/lib/dynamodb";
 import crypto from "crypto";
 
 export async function GET() {
-  const adminId = "admin_01j00000000000000000000001"; 
-  const passwordTemp = "AqtivaAdmin2026!";
+  const adminId = "admin_01j00000000000000000000002"; 
+  const passwordTemp = "TicnologyAdmin2026!";
   const passwordHash = crypto.createHash("sha256").update(passwordTemp).digest("hex");
 
   try {
@@ -17,7 +17,7 @@ export async function GET() {
         SK: `PROFILE`,
         userId: adminId,
         nombre: "Luis Enrique Admin",
-        email: "admin@aqtiva.io",
+        email: "admin@ticnology.io",
         passwordHash: passwordHash,
         rol: "ADMIN",
         fechaCreacion: new Date().toISOString(),

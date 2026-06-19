@@ -17,10 +17,28 @@ import { Doughnut, Bar } from "react-chartjs-2";
 // Registramos los componentes de Chart.js
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
 
+// Función auxiliar para determinar si una fecha está vencida respecto a hoy
+const verificarSiEstaVencida = (fechaVencStr: string): boolean => {
+  if (!fechaVencStr) return false;
+  const partes = fechaVencStr.split("/");
+  if (partes.length === 3) {
+    const dia = parseInt(partes[0], 10);
+    const mes = parseInt(partes[1], 10) - 1;
+    const anio = parseInt(partes[2], 10);
+    
+    const fechaVencimiento = new Date(anio, mes, dia);
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0); // Normalizar horas para comparar solo el calendario
+    
+    return fechaVencimiento < hoy;
+  }
+  return false;
+};
+
 export default function DashboardView() {
-  const { data: session } = useSession(); // 🚨 2. Obtenemos el usuario activo
+  const { data: session } = useSession();
   
-  const [empresas, setEmpresas] = useState<any[]>([]); // 🚨 3. Declaramos el estado de empresas
+  const [empresas, setEmpresas] = useState<any[]>([]);
   const [facturas, setFacturas] = useState<any[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -28,7 +46,6 @@ export default function DashboardView() {
   useEffect(() => {
     if (!session?.user?.email) return;
 
-    // 🚨 4. Cargamos las facturas, vouchers Y EMPRESAS al mismo tiempo
     Promise.all([
       fetch("/api/facturas").then((res) => res.json()),
       fetch("/api/vouchers").then((res) => res.json()),
@@ -43,18 +60,22 @@ export default function DashboardView() {
       .finally(() => setIsLoading(false));
   }, [session]);
 
-  // 🚨 5. Le decimos a TypeScript que 'e' es de tipo any
+  // Aislamiento Multi-Tenant
   const userRucs = new Set(empresas.map((e: any) => e.ruc));
   const misFacturas = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
   const misVouchers = vouchers.filter(v => userRucs.has(v.empresa_emisora_ruc));
 
   // ==========================================
-  // CÁLCULOS DE KPIs
+  // CÁLCULOS DE KPIs EXTENDIDOS
   // ==========================================
   const totalFacturas = misFacturas.length;
   const facturasCobradas = misFacturas.filter(f => f.estado === "COBRADO");
   const facturasPendientes = misFacturas.filter(f => f.estado === "PENDIENTE");
-  const vouchersEnTriaje = misVouchers.filter(v => v.estado === "PENDIENTE_REVISION")
+  const vouchersEnTriaje = misVouchers.filter(v => v.estado === "PENDIENTE_REVISION");
+  
+  // 🚨 NUEVOS CONTADORES: Vencidas y En Cobranza
+  const facturasVencidas = misFacturas.filter(f => f.estado !== "COBRADO" && verificarSiEstaVencida(f.fecha_vencimiento));
+  const facturasEnCobranza = misFacturas.filter(f => f.estado === "EN COBRANZA");
 
   const porcentajeCobrado = totalFacturas > 0 ? Math.round((facturasCobradas.length / totalFacturas) * 100) : 0;
 
@@ -78,10 +99,7 @@ export default function DashboardView() {
     .slice(0, 5)
     .map(([cliente, monto]) => ({ cliente, monto }));
 
-  // ==========================================
-  // CONFIGURACIÓN DE GRÁFICOS (CHART.JS)
-  // ==========================================
-  
+  // Gráficos
   const doughnutData = {
     labels: ['Cobradas', 'Pendientes', 'En Triaje'],
     datasets: [
@@ -97,9 +115,7 @@ export default function DashboardView() {
   const doughnutOptions: any = {
     responsive: true,
     maintainAspectRatio: false,
-    plugins: {
-      legend: { position: 'bottom' as const, labels: { usePointStyle: true, padding: 20 } }
-    },
+    plugins: { legend: { position: 'bottom' as const, labels: { usePointStyle: true, padding: 20 } } },
     cutout: '70%',
   };
 
@@ -113,16 +129,6 @@ export default function DashboardView() {
         borderRadius: 6,
       },
     ],
-  };
-
-  const barOptions: any = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      y: { beginAtZero: true, grid: { borderDash: [4, 4] } },
-      x: { grid: { display: false } }
-    }
   };
 
   if (isLoading) {
@@ -140,93 +146,112 @@ export default function DashboardView() {
         <p className="text-gray-500 mt-1">Métricas de conciliación y cuentas por cobrar en tiempo real.</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-center">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Total Catálogo</p>
-              <h3 className="text-3xl font-black text-gray-900 mt-1">{totalFacturas}</h3>
-            </div>
-            <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            </div>
-          </div>
-          <div className="w-full bg-gray-100 rounded-full h-2 mt-2">
-            <div className="bg-indigo-600 h-2 rounded-full" style={{ width: `${porcentajeCobrado}%` }}></div>
-          </div>
-          <p className="text-xs text-gray-500 mt-2 font-medium">{porcentajeCobrado}% de avance general</p>
-        </div>
-
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-center">
+      {/* 🚨 REJILLA DE KPIs EXPANDIDA A 6 ELEMENTOS */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
+        
+        {/* KPI 1: Total Catálogo */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex flex-col justify-between">
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Documentos Cobrados</p>
-              <h3 className="text-3xl font-black text-green-600 mt-1">{facturasCobradas.length}</h3>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Total Catálogo</p>
+              <h3 className="text-2xl font-black text-gray-900 mt-1">{totalFacturas}</h3>
             </div>
-            <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center text-green-600">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+            <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
             </div>
           </div>
-          <p className="text-sm text-gray-600 mt-4 font-medium flex items-center gap-1">
-             <span className="font-bold text-green-700">S/ {dineroRecuperado.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> recuperados
+          <div className="mt-4">
+            <div className="w-full bg-gray-100 rounded-full h-1.5">
+              <div className="bg-indigo-600 h-1.5 rounded-full" style={{ width: `${porcentajeCobrado}%` }}></div>
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1.5 font-medium">{porcentajeCobrado}% cobrado</p>
+          </div>
+        </div>
+
+        {/* KPI 2: Documentos Cobrados */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex flex-col justify-between">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Cobrados</p>
+              <h3 className="text-2xl font-black text-green-600 mt-1">{facturasCobradas.length}</h3>
+            </div>
+            <div className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-green-600 shrink-0">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mt-4 truncate font-medium">
+             S/ <span className="font-bold text-green-700">{dineroRecuperado.toLocaleString('en-US')}</span>
           </p>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-center">
+        {/* KPI 3: Pendientes de Pago */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex flex-col justify-between">
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Pendientes de Pago</p>
-              <h3 className="text-3xl font-black text-amber-500 mt-1">{facturasPendientes.length}</h3>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Pendientes</p>
+              <h3 className="text-2xl font-black text-amber-500 mt-1">{facturasPendientes.length}</h3>
             </div>
-            <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center text-amber-500">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            <div className="w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 shrink-0">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
             </div>
           </div>
-          <p className="text-sm text-gray-600 mt-4 font-medium flex items-center gap-1">
-             <span className="font-bold text-amber-600">S/ {dineroPendientePuro.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> por cobrar
+          <p className="text-xs text-gray-500 mt-4 truncate font-medium">
+             S/ <span className="font-bold text-amber-600">{dineroPendientePuro.toLocaleString('en-US')}</span>
           </p>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-center">
+        {/* KPI 4: En Triaje (Revisión) */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex flex-col justify-between">
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">En Triaje (Revisión)</p>
-              <h3 className="text-3xl font-black text-indigo-500 mt-1">{vouchersEnTriaje.length}</h3>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">En Triaje</p>
+              <h3 className="text-2xl font-black text-indigo-500 mt-1">{vouchersEnTriaje.length}</h3>
             </div>
-            <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-500">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+            <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-500 shrink-0">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2"></path></svg>
             </div>
           </div>
-          <p className="text-sm text-gray-600 mt-4 font-medium flex items-center gap-1">
-             <span className="font-bold text-indigo-600">~ S/ {dineroEnRevisionPuro.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> sugeridos
+          <p className="text-xs text-gray-500 mt-4 truncate font-medium">
+             ~ S/ <span className="font-bold text-indigo-600">{dineroEnRevisionPuro.toLocaleString('en-US')}</span>
           </p>
         </div>
+
+        {/* 🚨 KPI 5: CONTADOR FACTURAS VENCIDAS */}
+        <div className="bg-white rounded-xl shadow-sm border border-red-100 p-5 flex flex-col justify-between bg-red-50/20">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Facturas Vencidas</p>
+              <h3 className="text-2xl font-black text-red-600 mt-1">{facturasVencidas.length}</h3>
+            </div>
+            <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0 border border-red-200">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            </div>
+          </div>
+          <p className="text-[10px] text-red-500 mt-4 font-bold uppercase tracking-wide">Requiere Gestión Urgente</p>
+        </div>
+
+        {/* 🚨 KPI 6: CONTADOR EN COBRANZA */}
+        <div className="bg-white rounded-xl shadow-sm border border-blue-100 p-5 flex flex-col justify-between bg-blue-50/20">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">En Cobranza</p>
+              <h3 className="text-2xl font-black text-blue-600 mt-1">{facturasEnCobranza.length}</h3>
+            </div>
+            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center shrink-0 border border-blue-200">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>
+            </div>
+          </div>
+          <p className="text-[10px] text-blue-500 mt-4 font-bold uppercase tracking-wide">Seguimiento Activo</p>
+        </div>
+
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* (Gráficos inferiores se mantienen intactos y estables) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
           <h2 className="text-lg font-bold text-gray-800 mb-6">Estado de Documentos</h2>
           <div className="flex-1 relative min-h-[250px]">
-            {totalFacturas > 0 || vouchersEnTriaje.length > 0 ? (
-              <Doughnut data={doughnutData} options={doughnutOptions} />
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-400">Sin datos</div>
-            )}
-          </div>
-          <div className="mt-4 text-center">
-            <p className="text-2xl font-black text-gray-900">{totalFacturas + vouchersEnTriaje.length}</p>
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">Documentos Totales en Sistema</p>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
-          <h2 className="text-lg font-bold text-gray-800 mb-6">Distribución de Flujo (S/)</h2>
-          <div className="flex-1 relative min-h-[250px]">
-            {totalFacturas > 0 || vouchersEnTriaje.length > 0 ? (
-              <Bar data={barData} options={barOptions} />
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-400">Sin datos</div>
-            )}
+            <Doughnut data={doughnutData} options={doughnutOptions} />
           </div>
         </div>
 
@@ -234,24 +259,17 @@ export default function DashboardView() {
           <div className="p-6 border-b border-gray-100 bg-gray-50">
             <h2 className="text-lg font-bold text-gray-800">Top 5 Deudores (Críticos)</h2>
           </div>
-          
           {topDeudores.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center p-6 text-gray-500">
-              <p>No hay deudas pendientes registradas.</p>
-            </div>
+            <div className="flex-1 flex items-center justify-center p-6 text-gray-500"><p>No hay deudas pendientes registradas.</p></div>
           ) : (
             <ul className="divide-y divide-gray-100 overflow-y-auto">
               {topDeudores.map((deudor, idx) => (
                 <li key={idx} className="p-4 hover:bg-gray-50 flex items-center justify-between transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded bg-red-50 text-red-600 font-bold flex items-center justify-center text-xs border border-red-100 shrink-0">
-                      {idx + 1}
-                    </div>
-                    <span className="font-bold text-gray-800 text-sm truncate max-w-[150px]" title={deudor.cliente}>{deudor.cliente}</span>
+                    <div className="w-8 h-8 rounded bg-red-50 text-red-600 font-bold flex items-center justify-center text-xs border border-red-100 shrink-0">{idx + 1}</div>
+                    <span className="font-bold text-gray-800 text-sm truncate max-w-[150px]">{deudor.cliente}</span>
                   </div>
-                  <span className="font-mono font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap">
-                    S/ {deudor.monto.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                  </span>
+                  <span className="font-mono font-bold text-red-600 bg-red-50 px-2 py-1 rounded">S/ {deudor.monto.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
                 </li>
               ))}
             </ul>

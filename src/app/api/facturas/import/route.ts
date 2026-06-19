@@ -1,18 +1,30 @@
 import { NextResponse } from "next/server";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { dynamoDb } from "@/lib/dynamodb";
+import { s3Client } from "@/lib/s3"; // 🚨 Asegúrate de tener exportado s3Client
 
-// Utilidad para extraer valores buscando coincidencias parciales en las llaves
+const BUCKET_NAME = process.env.BUCKET_NAME!;
+
+// Utilidad mejorada: Primero busca coincidencia exacta, luego parcial.
 function getValueByKeywords(row: any, keywords: string[]) {
-  const foundKey = Object.keys(row).find(k => 
-    keywords.some(keyword => k.toUpperCase().includes(keyword.toUpperCase()))
+  let foundKey = Object.keys(row).find(k => 
+    keywords.some(keyword => k.trim().toUpperCase() === keyword.toUpperCase())
   );
+  
+  if (!foundKey) {
+    foundKey = Object.keys(row).find(k => 
+      keywords.some(keyword => k.toUpperCase().includes(keyword.toUpperCase()))
+    );
+  }
+  
   return foundKey ? row[foundKey] : "";
 }
 
-// Convertir fechas seriales de Excel a formato legible
 function formatExcelDate(serial: any) {
   if (!serial) return "";
+  if (typeof serial === "string" && serial.includes("/")) return serial.trim();
+  if (typeof serial === "string" && serial.includes("-")) return serial.trim();
   if (typeof serial === "number") {
     const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
     return date.toLocaleDateString("es-PE", { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -32,46 +44,53 @@ export async function POST(req: Request) {
     let errores = 0;
 
     for (const row of rows) {
-      // 1. EXTRAER NÚMERO DE DOCUMENTO (Num. Doc vs Serie + N°Comprobante)
-      let numDoc = String(getValueByKeywords(row, ["Num. Doc", "Comprobante", "Documento"])).trim();
-      const serie = String(getValueByKeywords(row, ["Serie"])).trim();
+      // 1. EXTRAER NÚMERO DE DOCUMENTO
+      let numDoc = String(getValueByKeywords(row, ["NUM. DOC", "COMPROBANTE", "DOCUMENTO", "FACTURA"])).trim();
+      const serie = String(getValueByKeywords(row, ["SERIE"])).trim();
       if (serie && !numDoc.includes(serie)) {
         numDoc = `${serie}-${numDoc}`;
       }
       
-      // Si no hay número de documento, saltamos la fila (es basura del Excel)
       if (!numDoc || numDoc === "-") continue;
 
       // 2. EXTRAER EL RESTO DE CAMPOS ESTANDARIZADOS
-      const cliente = String(getValueByKeywords(row, ["Cliente", "RAZÓN SOCIAL", "APELLIDOS Y NOMBRE"])).trim();
-      const ruc = String(getValueByKeywords(row, ["RUC", "DNI"])).trim();
-      const fechaEmision = formatExcelDate(getValueByKeywords(row, ["Emisión", "EMISI"]));
-      const fechaVencimiento = formatExcelDate(getValueByKeywords(row, ["Vencimiento"]));
-      const monedaOriginal = String(getValueByKeywords(row, ["MONEDA", "Mon"])).trim().toUpperCase();
+      const cliente = String(getValueByKeywords(row, ["CLIENTE", "RAZÓN SOCIAL", "RAZON SOCIAL", "APELLIDOS Y NOMBRE"])).trim();
+      const ruc = String(getValueByKeywords(row, ["RUC", "DNI", "DOCUMENTO IDENTIDAD"])).trim();
       
-      // Normalizar Moneda
-      const moneda = monedaOriginal.includes("USD") || monedaOriginal.includes("DOLARES") ? "USD" : "SOLES";
+      const fechaEmision = formatExcelDate(getValueByKeywords(row, ["FECHA EMISION", "FECHA EMISIÓN", "EMISIÓN", "EMISION"]));
+      const fechaVencimiento = formatExcelDate(getValueByKeywords(row, ["FECHA VENCIMIENTO", "VENCIMIENTO", "FECHA VENC", "FECHA DE VENCIMIENTO"]));
       
-      // Extraer Monto limpiando símbolos de moneda si los tuviera
-      let montoBruto = String(getValueByKeywords(row, ["Monto Facturado", "MONTO TOTAL", "MONTO\n TOTAL"]));
+      const monedaOriginal = String(getValueByKeywords(row, ["DIVISA", "MONEDA"])).trim().toUpperCase();
+      
+      let moneda = "SOLES";
+      if (monedaOriginal.includes("USD") || monedaOriginal.includes("DOLAR") || monedaOriginal.includes("DÓLAR")) {
+        moneda = "USD";
+      } else if (monedaOriginal.includes("EUR") || monedaOriginal.includes("EURO")) {
+        moneda = "EUR";
+      } else if (monedaOriginal === "PEN" || monedaOriginal.includes("SOL")) {
+        moneda = "SOLES";
+      } else if (monedaOriginal) {
+        moneda = monedaOriginal;
+      }
+      
+      let montoBruto = String(getValueByKeywords(row, ["MONTO TOTAL", "TOTAL", "MONTO FACTURADO", "IMPORTE"]));
       let monto = parseFloat(montoBruto.replace(/[^0-9.-]+/g,""));
       if (isNaN(monto)) monto = 0;
 
-      // Extraer estado original del Excel (si dice cobrado no lo ponemos pendiente)
-      const estadoExcel = String(getValueByKeywords(row, ["Estado"])).trim().toUpperCase();
+      const estadoExcel = String(getValueByKeywords(row, ["ESTADO", "SITUACION", "SITUACIÓN"])).trim().toUpperCase();
       let estadoFinal = "PENDIENTE";
-      if (estadoExcel.includes("COBRADO") || estadoExcel.includes("CANCELADO")) {
+      if (estadoExcel.includes("COBRADO") || estadoExcel.includes("CANCELADO") || estadoExcel.includes("PAGADO")) {
         estadoFinal = "COBRADO";
       }
 
-      // 3. GUARDAR EN DYNAMODB
       const PK = `INVOICE#${empresaEmisoraRuc}#${numDoc}`;
       
       try {
+        // 3. GUARDAR EN DYNAMODB
         await dynamoDb.send(new PutCommand({
           TableName: "AqtivaChatDB",
           Item: {
-            PK: PK, // Ahora sí usará el formato INVOICE#20100097746#F001-160
+            PK: PK,
             SK: "METADATA",
             numero_documento: numDoc,
             cliente: cliente,
@@ -87,8 +106,22 @@ export async function POST(req: Request) {
             fuente_importacion: fuenteOriginal || "Excel",
             fecha_importacion: new Date().toISOString()
           },
-          ConditionExpression: "attribute_not_exists(PK)"
+          ConditionExpression: "attribute_not_exists(PK)" // Evita duplicados
         }));
+
+        // 🚨 4. NUEVO: GENERAR EL ARCHIVO DE TEXTO Y SUBIRLO A S3
+        // Esto creará el archivo que la Inteligencia Artificial lee, con TODOS los campos
+        const textoS3 = `**Número Documento:** ${numDoc}\n**Cliente:** ${cliente}\n**RUC Cliente:** ${ruc}\n**Monto Total:** ${monto}\n**Moneda:** ${moneda}\n**Fecha Emisión:** ${fechaEmision}\n**Fecha Vencimiento:** ${fechaVencimiento || "No especificada"}\n**Estado:** ${estadoFinal}`;
+
+        const keyS3 = `processed-invoice/${numDoc}.txt`;
+
+        await s3Client.send(new PutObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: keyS3,
+          Body: textoS3,
+          ContentType: "text/plain"
+        }));
+
         procesados++;
       } catch (err: any) {
         if (err.name !== "ConditionalCheckFailedException") {
@@ -100,7 +133,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      message: `Catálogo actualizado: ${procesados} facturas importadas a la base de datos (${errores} errores).`,
+      message: `Catálogo actualizado: ${procesados} facturas importadas a la base de datos y a S3 (${errores} duplicados ignorados o errores).`,
     });
 
   } catch (error: any) {

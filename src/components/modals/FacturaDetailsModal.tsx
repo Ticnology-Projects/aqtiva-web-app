@@ -1,5 +1,47 @@
 "use client";
+
 import { useState, useEffect } from "react";
+
+// 🚨 AUXILIAR: Formateador robusto para evitar el "Invalid Date"
+const formatModalDate = (dateStr: string) => {
+  if (!dateStr) return 'Sin fecha';
+  
+  // Si ya viene en formato limpio DD/MM/AAAA, lo dejamos intacto
+  if (dateStr.includes('/') && !dateStr.includes('T')) return dateStr;
+  
+  try {
+    const dateObj = new Date(dateStr);
+    if (!isNaN(dateObj.getTime())) {
+      return dateObj.toLocaleDateString('es-PE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+    }
+  } catch (e) {
+    console.error("Error parseando fecha en el modal:", e);
+  }
+
+  // Fallback manual si el constructor de Date falla con formatos ISO parciales
+  if (dateStr.includes('-')) {
+    const soloFecha = dateStr.split('T')[0];
+    const parts = soloFecha.split('-');
+    if (parts[0].length === 4) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+  }
+  
+  return dateStr;
+};
+
+// 🚨 AUXILIAR: Traductor dinámico de divisa a símbolo visual
+const getModalCurrencySymbol = (monedaStr: string) => {
+  if (!monedaStr) return "S/";
+  const m = monedaStr.toUpperCase();
+  if (m === "USD" || m.includes("DOLAR") || m.includes("DÓLAR")) return "$";
+  if (m === "EUR" || m.includes("EURO")) return "€";
+  return "S/";
+};
 
 export default function FacturaDetailsModal({ facturaDetails, onClose, onRefresh }: any) {
   const [voucherImageUrl, setVoucherImageUrl] = useState<string | null>(null);
@@ -26,120 +68,123 @@ export default function FacturaDetailsModal({ facturaDetails, onClose, onRefresh
     if (!file) return;
 
     setIsAttaching(true);
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-        const base64 = ev.target?.result as string;
-        try {
-            const res = await fetch("/api/facturas/adjuntar", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    factura_pk: facturaDetails.PK,
-                    numero_documento: facturaDetails.numero_documento,
-                    fileName: file.name,
-                    fileBase64: base64
-                })
-            });
-            const data = await res.json();
-            if (data.success) {
-                alert("Comprobante adjuntado exitosamente. Se ha registrado en la Auditoría.");
-                if (onRefresh) onRefresh();
-                onClose();
-            } else {
-                alert(data.error);
-            }
-        } catch (err) {
-            alert("Error de red al adjuntar comprobante.");
-        } finally {
-            setIsAttaching(false);
-        }
-    };
-    reader.readAsDataURL(file);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("factura_pk", facturaDetails.PK);
+    formData.append("numero_documento", facturaDetails.numero_documento);
+    formData.append("empresa_emisora_ruc", facturaDetails.empresa_emisora_ruc);
+
+    try {
+      const res = await fetch("/api/facturas/adjuntar-comprobante", {
+        method: "POST",
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert("Comprobante visual adjuntado correctamente.");
+        if (onRefresh) onRefresh();
+        onClose();
+      } else {
+        alert(data.error || "Error al adjuntar el archivo.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error de red al intentar subir el archivo.");
+    } finally {
+      setIsAttaching(false);
+    }
   };
 
   if (!facturaDetails) return null;
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[95vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
         
-        <div className="flex justify-between items-center px-6 py-4 border-b border-gray-200 bg-gray-50 shrink-0">
-          <h2 className="text-xl font-bold text-gray-800">Detalles de Factura</h2>
+        {/* Cabecera */}
+        <div className="flex justify-between items-center px-6 py-4 border-b bg-gray-50">
+          <div>
+            <h2 className="text-xl font-bold text-gray-800">Detalles de Factura</h2>
+            <p className="text-xs text-indigo-600 font-mono mt-0.5">ID: {facturaDetails.numero_documento}</p>
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button>
         </div>
-        
-        <div className="p-6 space-y-6 overflow-y-auto flex-1">
-          <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-100">
-            <div>
-              <p className="text-xs font-bold text-gray-500 uppercase">Documento</p>
-              <p className="text-2xl font-bold text-indigo-700 font-mono">{facturaDetails.numero_documento}</p>
-            </div>
-            <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-bold shadow-sm ${facturaDetails.estado === 'COBRADO' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{facturaDetails.estado}</span>
-          </div>
 
-          <div className="grid grid-cols-2 gap-5 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-            {/* NUEVO: Campo de Empresa (Cobradora) */}
-            <div className="col-span-2 border-b border-gray-100 pb-3">
-              <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mb-1">Empresa Cobradora (Emisor)</p>
-              <p className="text-sm font-bold text-indigo-800 uppercase flex items-center gap-2">
-                🏢 {facturaDetails.empresa_emisora_nombre || 'N/A'}
-              </p>
-              <p className="text-xs text-gray-500 font-mono mt-0.5">RUC: {facturaDetails.empresa_emisora_ruc || 'N/A'}</p>
-            </div>
-
+        {/* Contenido */}
+        <div className="p-6 space-y-6 overflow-y-auto flex-1 custom-scrollbar">
+          
+          {/* Bloque Principal Monto e Info */}
+          <div className="bg-gray-50 rounded-xl p-5 border border-gray-200 flex justify-between items-center">
             <div>
-              <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mb-1">Cliente a Cobrar</p>
-              <p className="text-sm font-medium text-gray-900">{facturaDetails.cliente}</p>
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">Monto Pendiente</span>
+              {/* 🚨 RENDERIZADO DE MONEDA DINÁMICA */}
+              <span className="text-3xl font-black text-gray-900 mt-1 inline-flex items-center gap-1.5">
+                <span className="text-indigo-600 font-mono font-medium text-xl">{getModalCurrencySymbol(facturaDetails.moneda)}</span>
+                {Number(facturaDetails.monto || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </span>
             </div>
-            <div>
-              <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mb-1">Monto Total</p>
-              <p className="text-lg font-black text-gray-900">S/ {Number(facturaDetails.monto || 0).toFixed(2)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mb-1">Fecha Emisión</p>
-              <p className="text-sm font-medium text-gray-800">{facturaDetails.fecha_emision ? new Date(facturaDetails.fecha_emision).toLocaleDateString('es-PE') : '---'}</p>
+            <div className="text-right">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1">Estado de Pago</span>
+              <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${facturaDetails.estado === 'COBRADO' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
+                {facturaDetails.estado}
+              </span>
             </div>
           </div>
 
-          {facturaDetails.estado === 'COBRADO' && (
-            <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-5">
-              <h3 className="text-sm font-bold text-indigo-800 uppercase mb-2">Constancia de Pago</h3>
-              
-              {facturaDetails.voucher_conciliado && facturaDetails.voucher_conciliado.includes('/') ? (
-                <>
-                  <p className="text-xs text-indigo-600 font-medium">Voucher vinculado:</p>
-                  <p className="text-sm font-mono font-bold bg-white px-3 py-2 rounded border border-indigo-200 break-all mb-4">
-                    {facturaDetails.voucher_conciliado.split('/').pop()}
-                  </p>
-                  <div className="border border-indigo-200 rounded-lg overflow-hidden bg-white flex items-center justify-center min-h-[200px]">
-                    {isLoadingImage ? (
-                      <div className="p-8 text-center text-indigo-500"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-2 mx-auto"></div>Cargando...</div>
-                    ) : voucherImageUrl ? (
-                      <a href={voucherImageUrl} target="_blank" rel="noreferrer"><img src={voucherImageUrl} alt="Comprobante" className="w-full max-h-[300px] object-contain hover:opacity-90" /></a>
-                    ) : (
-                      <p className="p-8 text-red-500 text-xs">No se pudo cargar la imagen.</p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="mt-2 border-2 border-dashed border-indigo-300 rounded-xl bg-white p-6 text-center">
-                  <div className="w-12 h-12 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-3 text-indigo-400">
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                  </div>
-                  <p className="text-sm font-medium text-gray-700 mb-1">Esta factura ya fue cobrada</p>
-                  <p className="text-xs text-gray-500 mb-4">No tiene un comprobante visual adjunto. Puedes subir uno como constancia para la auditoría.</p>
-                  <label className={`cursor-pointer bg-indigo-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm inline-flex items-center gap-2 ${isAttaching ? 'opacity-50 cursor-wait' : ''}`}>
-                    {isAttaching ? "Subiendo..." : "Adjuntar PNG/JPG"}
-                    <input type="file" accept="image/png, image/jpeg, image/jpg" className="hidden" onChange={handleAttach} disabled={isAttaching} />
-                  </label>
+          {/* Detalles del Cliente y Fechas */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">Razón Social / Cliente</span>
+              <p className="text-sm font-bold text-gray-800 leading-tight">{facturaDetails.cliente || "No especificado"}</p>
+            </div>
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">RUC del Adquiriente</span>
+              <p className="text-sm font-mono font-bold text-gray-700">{facturaDetails.ruc_cliente || "---"}</p>
+            </div>
+
+            <div className="space-y-1 pt-2 border-t border-gray-100 md:border-none">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">Fecha de Emisión</span>
+              {/* 🚨 FIJADO: Evita el Invalid Date */}
+              <p className="text-sm font-medium text-gray-800">{formatModalDate(facturaDetails.fecha_emision)}</p>
+            </div>
+            <div className="space-y-1 pt-2 border-t border-gray-100 md:border-none">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">Fecha de Vencimiento</span>
+              {/* 🚨 FIJADO: Evita el Invalid Date */}
+              <p className="text-sm font-medium text-gray-800">{formatModalDate(facturaDetails.fecha_vencimiento)}</p>
+            </div>
+          </div>
+
+          {/* Espacio para la Constancia Visual */}
+          <div className="border-t border-gray-200 pt-5">
+            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Constancia del Depósito (Voucher)</h4>
+            
+            {isLoadingImage ? (
+              <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div></div>
+            ) : voucherImageUrl ? (
+              <div className="w-full bg-gray-100 rounded-xl border border-gray-200 overflow-hidden flex justify-center p-2 max-h-64 shadow-inner">
+                <img src={voucherImageUrl} alt="Comprobante de Pago" className="max-w-full max-h-full object-contain rounded" />
+              </div>
+            ) : (
+              <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center bg-gray-50/50">
+                <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
                 </div>
-              )}
-            </div>
-          )}
+                <p className="text-sm font-medium text-gray-700 mb-1">No hay comprobante visual vinculado</p>
+                <p className="text-xs text-gray-400 mb-4">Puedes cargar un archivo de imagen (PNG/JPG) como soporte para la auditoría de caja.</p>
+                <label className={`cursor-pointer bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-indigo-700 transition-colors shadow-sm inline-flex items-center gap-1.5 ${isAttaching ? 'opacity-50 cursor-wait' : ''}`}>
+                  {isAttaching ? "Subiendo..." : "Adjuntar Comprobante"}
+                  <input type="file" accept="image/png, image/jpeg, image/jpg" className="hidden" onChange={handleAttach} disabled={isAttaching} />
+                </label>
+              </div>
+            )}
+          </div>
         </div>
-        
+
+        {/* Footer */}
         <div className="bg-gray-50 border-t px-6 py-4 flex justify-end shrink-0">
-          <button onClick={onClose} className="px-6 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-100 transition-colors">Cerrar</button>
+          <button onClick={onClose} className="px-5 py-2 bg-white border border-gray-300 hover:bg-gray-50 font-bold rounded-lg text-sm transition-colors text-gray-700 shadow-sm">
+            Cerrar Ventana
+          </button>
         </div>
       </div>
     </div>

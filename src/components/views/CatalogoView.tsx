@@ -31,6 +31,15 @@ const displayDate = (dateStr: string) => {
   return dateStr;
 };
 
+// 🚨 NUEVA FUNCIÓN: Traductor de divisa a símbolo visual
+const getCurrencySymbol = (monedaStr: string) => {
+  if (!monedaStr) return "S/";
+  const m = monedaStr.toUpperCase();
+  if (m === "USD" || m.includes("DOLAR") || m.includes("DÓLAR")) return "$";
+  if (m === "EUR" || m.includes("EURO")) return "€";
+  return "S/";
+};
+
 export default function CatalogoView() {
   const { data: session } = useSession();
   const [facturas, setFacturas] = useState<any[]>([]);
@@ -40,7 +49,6 @@ export default function CatalogoView() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filtroEstado, setFiltroEstado] = useState<"TODOS" | "COBRADO" | "PENDIENTE" | "EN REVISIÓN">("TODOS");
 
-  // 🚨 NUEVO ESTADO: Filtro por origen de conciliación
   const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -148,33 +156,29 @@ export default function CatalogoView() {
   };
 
   const userRucs = new Set(empresas.map(e => e.ruc));
-  // 1. Filtrar para que solo existan facturas de mis empresas
   const facturasDelUsuario = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
-
-  // 1. Filtrar primero por Empresa Emisora
   const facturasPorEmpresa = facturasDelUsuario.filter(f => !empresaFiltro || f.empresa_emisora_ruc === empresaFiltro);
 
-  // 2. Filtros Combinados (Texto, Estado y Origen IA)
   const filteredFacturas = facturasPorEmpresa.filter((f) => {
-    // 🚨 Filtro por Método de Resolución
     if (filtroOrigen === "AUTO_IA" && f.metodo_resolucion !== "AUTOMATICO_IA") return false;
     if (filtroOrigen === "MANUAL" && f.metodo_resolucion === "AUTOMATICO_IA") return false;
-    // Filtro de Búsqueda
+    
     const term = searchTerm.toLowerCase();
     const matchSearch = !term ||
       f.numero_documento?.toLowerCase().includes(term) ||
       f.cliente?.toLowerCase().includes(term) ||
       f.ruc_cliente?.toLowerCase().includes(term);
 
-    // Filtro de Estado
     const matchEstado = filtroEstado === "TODOS" || f.estado === filtroEstado;
-
     return matchSearch && matchEstado;
   });
 
-  // Métricas financieras calculadas sobre lo filtrado
-  const montoCobrado = filteredFacturas.filter(f => f.estado === 'COBRADO').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
-  const montoPendiente = filteredFacturas.filter(f => f.estado !== 'COBRADO').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  // 🚨 MULTI-DIVISA EN KPIs: Separamos SOLES y USD para no mezclar manzanas con peras
+  const cobradoPEN = filteredFacturas.filter(f => f.estado === 'COBRADO' && (f.moneda === 'SOLES' || !f.moneda)).reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  const cobradoUSD = filteredFacturas.filter(f => f.estado === 'COBRADO' && f.moneda === 'USD').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  
+  const pendientePEN = filteredFacturas.filter(f => f.estado !== 'COBRADO' && (f.moneda === 'SOLES' || !f.moneda)).reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  const pendienteUSD = filteredFacturas.filter(f => f.estado !== 'COBRADO' && f.moneda === 'USD').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
 
   return (
     <div className="animate-fadeIn">
@@ -186,11 +190,13 @@ export default function CatalogoView() {
         <div className="flex gap-2 text-right">
           <div className="bg-green-50 px-4 py-2 rounded-lg border border-green-200">
             <p className="text-[10px] uppercase font-bold text-green-700 tracking-wider">Cobrado Total</p>
-            <p className="text-lg font-black text-green-700">S/ {montoCobrado.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-lg font-black text-green-700">S/ {cobradoPEN.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            {cobradoUSD > 0 && <p className="text-sm font-bold text-green-600 border-t border-green-200/50 mt-1 pt-1">$ {cobradoUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>}
           </div>
           <div className="bg-amber-50 px-4 py-2 rounded-lg border border-amber-200">
             <p className="text-[10px] uppercase font-bold text-amber-700 tracking-wider">Por Cobrar</p>
-            <p className="text-lg font-black text-amber-700">S/ {montoPendiente.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-lg font-black text-amber-700">S/ {pendientePEN.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            {pendienteUSD > 0 && <p className="text-sm font-bold text-amber-600 border-t border-amber-200/50 mt-1 pt-1">$ {pendienteUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>}
           </div>
         </div>
       </div>
@@ -198,7 +204,6 @@ export default function CatalogoView() {
       {/* BARRA DE HERRAMIENTAS Y FILTROS */}
       <div className="mb-6 flex flex-col xl:flex-row gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-start xl:items-center">
 
-        {/* Sección Izquierda: Buscador y Filtro Empresa */}
         <div className="flex flex-col sm:flex-row gap-3 w-full xl:flex-1">
           <div className="relative flex-1 w-full">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -224,17 +229,14 @@ export default function CatalogoView() {
           </select>
         </div>
 
-        {/* Sección Derecha: Pestañas Múltiples y Botones */}
         <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto justify-end items-center flex-wrap">
 
-          {/* 🚨 NUEVO: Pestañas de Filtro Origen IA */}
           <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
             <button onClick={() => setFiltroOrigen("TODOS")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex-1 sm:flex-none ${filtroOrigen === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
             <button onClick={() => setFiltroOrigen("AUTO_IA")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "AUTO_IA" ? "bg-indigo-100 text-indigo-700 shadow-sm" : "text-gray-500 hover:text-indigo-600"}`}>🤖 Auto IA</button>
             <button onClick={() => setFiltroOrigen("MANUAL")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "MANUAL" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>👤 Manual</button>
           </div>
 
-          {/* Pestañas de Estado */}
           <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
             <button onClick={() => setFiltroEstado("TODOS")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
             <button onClick={() => setFiltroEstado("PENDIENTE")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "PENDIENTE" ? "bg-white shadow-sm text-amber-600" : "text-gray-500 hover:text-amber-600"}`}>Pendientes</button>
@@ -288,7 +290,6 @@ export default function CatalogoView() {
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-indigo-700">{factura.numero_documento}</span>
-                      {/* 🚨 ETIQUETA VISUAL IA */}
                       {factura.metodo_resolucion === "AUTOMATICO_IA" && (
                         <span className="bg-indigo-50 text-indigo-600 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider border border-indigo-100" title="Conciliada Automáticamente">
                           🤖 IA
@@ -309,7 +310,11 @@ export default function CatalogoView() {
                     {displayDate(factura.fecha_emision)}
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <p className="font-bold text-gray-900">S/ {Number(factura.monto || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+                    {/* 🚨 SÍMBOLO DINÁMICO */}
+                    <p className="font-bold text-gray-900">
+                      <span className="mr-1 text-gray-500 font-mono">{getCurrencySymbol(factura.moneda)}</span>
+                      {Number(factura.monto || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </p>
                   </td>
                   <td className="px-6 py-4 text-center">
                     <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold ${factura.estado === 'COBRADO' ? 'bg-green-100 text-green-800' : factura.estado === 'EN REVISIÓN' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-800'}`}>

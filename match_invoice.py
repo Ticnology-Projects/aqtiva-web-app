@@ -65,10 +65,10 @@ def build_query(ext: dict, empresa_ruc: str) -> str:
     if ruc_r:             parts.append(f"**RUC:** {ruc_r}")
     if ruc_e:             parts.append(f"**RUC:** {ruc_e}")
     if monto is not None: parts.append(f"**Monto Total:** {monto}")
+    if moneda:            parts.append(f"**Moneda:** {moneda}") # Refuerzo en la búsqueda vectorial
     if fecha:             parts.append(f"**Fecha Emisión:** {fecha}")
     if emisor:            parts.append(f"**Cliente:** {emisor}")
     if forma_pago:        parts.append(f"**Forma De Pago:** {forma_pago}")
-    if moneda:            parts.append(f"**Moneda:** {moneda}")
 
     return " ".join(parts)
 
@@ -115,6 +115,7 @@ def evaluate(ext: dict, candidates: list[dict]) -> dict:
         for i, c in enumerate(candidates)
     )
 
+    # 🚨 MAGIA: PROMPT MEJORADO CON REGLAS FINANCIERAS ESTRICTAS PARA DIVISAS Y FECHAS
     prompt = f"""Eres un experto en conciliación de cuentas por cobrar.
 Tu única tarea es comparar un comprobante escaneado contra facturas del catálogo y determinar cuál coincide mejor.
 
@@ -130,29 +131,28 @@ Tu única tarea es comparar un comprobante escaneado contra facturas del catálo
 Sigue estos pasos en orden:
 
 1. Elige la factura con mayor coincidencia usando esta prioridad de campos:
-   numero_operacion exacto > numero_documento exacto > RUC exacto > monto (±1%) > REGLA FIFO (La Más Antigua) > cliente
+   numero_operacion exacto > numero_documento exacto > RUC exacto > monto (±1%) Y moneda exacta > REGLA FIFO (La Más Antigua) > cliente
 
 2. Determina el nivel_confianza aplicando los criterios en orden descendente, deteniéndote en el primero que se cumpla:
 
    ALTO — si se cumple al menos una de estas condiciones:
      a) numero_operacion está presente en el comprobante Y en la factura, y son idénticos carácter a carácter.
      b) numero_documento está presente en el comprobante Y coincide exacto con el número de la factura.
-     c) RUC está presente en el comprobante Y coincide exacto, Y el monto difiere menos de 1%, Y la fecha es el mismo mes.
+     c) RUC está presente en el comprobante Y coincide exacto, Y el monto difiere menos de 1%, Y la MONEDA coincide (ej. el comprobante y la factura son ambos SOLES/PEN o ambos USD), Y la fecha es cercana.
 
    MEDIO — si no se cumple ningún criterio ALTO, pero se cumplen al menos 2 de estos grupos:
      · Grupo A: cliente o RUC presente en el comprobante y coincide exacto o muy similar.
-     · Grupo B: monto difiere menos de 5% Y forma_pago coincide.
-     · Grupo C: fecha en el mismo mes y año.
+     · Grupo B: monto difiere menos de 5% Y la moneda coincide.
+     · Grupo C: la fecha del comprobante tiene sentido respecto a la fecha_emision o fecha_vencimiento de la factura.
 
-   BAJO — si solo coincide 1 grupo de los anteriores, o solo hay coincidencias en campos genéricos.
+   BAJO — si solo coincide 1 grupo de los anteriores, o hay discrepancia de divisas pero coinciden en montos.
 
    SIN_MATCH — si ninguna factura tiene coincidencia significativa.
 
 3. Reglas que deben respetarse siempre:
-   - Un campo solo cuenta como coincidente si está presente (no nulo) en el comprobante Y en la factura.
-   - Si numero_operacion está en el comprobante Y en la factura pero no son idénticos, el nivel máximo posible es BAJO.
-   - REGLA FIFO (First-In, First-Out): Si el comprobante coincide con varias facturas del mismo cliente por el mismo monto exacto, y el comprobante no indica un numero_documento ni numero_operacion que permita diferenciarlas, OBLIGATORIAMENTE debes sugerir la factura MÁS ANTIGUA (la que tenga la fecha_emision más lejana en el pasado) para conciliarla primero.
-   - La justificacion debe explicar qué criterio aplicaste y por qué. Si aplicaste la Regla FIFO, indícalo explícitamente en el campo 'justificacion'.
+   - REGLA DE DIVISAS (MUY ESTRICTA): Un comprobante emitido claramente en dólares (USD/US$) NO debe conciliarse automáticamente con una factura en SOLES (PEN/S/) aunque el monto sea idéntico (ej. 100 USD != 100 PEN). Si detectas discrepancia de divisas, penaliza el nivel_confianza y decláralo en 'campos_discrepantes'.
+   - REGLA FIFO (First-In, First-Out): Si el comprobante coincide con varias facturas del mismo cliente por el mismo monto y la MISMA MONEDA, y no hay numero_documento que las diferencie, debes sugerir la factura que tenga la 'fecha_emision' o 'fecha_vencimiento' más antigua para pagarla primero.
+   - Si aplicaste la Regla FIFO o detectaste discrepancia de monedas, indícalo claramente en el campo 'justificacion'.
 </instrucciones>
 
 Devuelve ÚNICAMENTE un objeto JSON válido. NO escribas saludos ni justificaciones fuera de la estructura JSON.
@@ -194,14 +194,13 @@ Devuelve ÚNICAMENTE un objeto JSON válido. NO escribas saludos ni justificacio
 
     raw = response["content"][0]["text"]
     
-    # 🚨 EXTRACCIÓN ROBUSTA: Encontramos la primera { y la última } ignorando el texto humano
     start_idx = raw.find('{')
     end_idx = raw.rfind('}')
     
     if start_idx != -1 and end_idx != -1:
         clean_json = raw[start_idx:end_idx+1]
     else:
-        clean_json = raw # Fallback de emergencia
+        clean_json = raw 
         
     return json.loads(clean_json.strip(), parse_float=decimal.Decimal)
 
@@ -209,12 +208,10 @@ Devuelve ÚNICAMENTE un objeto JSON válido. NO escribas saludos ni justificacio
 def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candidates, archivo_original=None):
     processed_s3_key = f"processed/{file_name}.json"
     
-    # Inyección segura del archivo de imagen
     datos_s3 = conciliacion.copy()
     if archivo_original:
         datos_s3["archivo"] = archivo_original
         
-    # 1. Guardar archivo final JSON en S3
     s3.put_object(
         Bucket=BUCKET_NAME,
         Key=processed_s3_key,
@@ -222,7 +219,6 @@ def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candida
         ContentType="application/json"
     )
     
-    # 2. Guardar Voucher en DynamoDB
     timestamp = datetime.utcnow().isoformat() + "Z"
     voucher_pk = f"VOUCHER#{file_name}"
     
@@ -238,7 +234,6 @@ def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candida
         "fecha_importacion": timestamp
     })
     
-    # 3. Crear Ticket de Auditoría inicial
     table.put_item(Item={
         "PK": f"AUDIT#{timestamp}#VOUCHER_{file_name}",
         "SK": "METADATA",

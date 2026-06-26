@@ -3,6 +3,25 @@ import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import ResolucionModal from "../modals/ResolucionModal";
 
+// 🚨 HELPER: Extrae la sugerencia sin importar si es 1 factura o un Lote
+const getSugerenciaInfo = (conciliacion: any) => {
+  if (!conciliacion) return { cliente: 'No detectado', doc: '---' };
+  
+  if (conciliacion.tipo_conciliacion === 'LOTE' && conciliacion.facturas_sugeridas?.length > 1) {
+    const clientes = [...new Set(conciliacion.facturas_sugeridas.map((f: any) => f.cliente))];
+    return {
+      cliente: clientes.join(", ") || 'Múltiples clientes',
+      doc: `Lote de ${conciliacion.facturas_sugeridas.length} facturas`
+    };
+  }
+
+  const sug = conciliacion.factura_sugerida || conciliacion.facturas_sugeridas?.[0];
+  return {
+    cliente: sug?.cliente || 'No detectado',
+    doc: sug?.numero_documento || '---'
+  };
+};
+
 export default function TriajeView() {
   const { data: session } = useSession();
   
@@ -11,7 +30,6 @@ export default function TriajeView() {
   const [isResolving, setIsResolving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Estados de Empresas
   const [empresas, setEmpresas] = useState<any[]>([]);
   const [empresaFiltro, setEmpresaFiltro] = useState("");
 
@@ -44,18 +62,22 @@ export default function TriajeView() {
 
   useEffect(() => { fetchVouchers(); }, []);
 
-  const handleConfirm = async (facturaSeleccionada: any) => {
+  const handleConfirm = async (payloadOpciones: any) => {
     setIsResolving(true);
     try {
+      // payloadOpciones puede ser { factura_pk, numero_documento } (Modo 1:1)
+      // O puede ser { facturas: [{PK, numero_documento}] } (Modo Lote)
+      
+      const payloadBase = {
+        s3_key_voucher: selectedVoucher.s3_key, 
+        PK_Voucher: selectedVoucher.PK,
+        ...payloadOpciones // Esparcimos el objeto que vino del Modal
+      };
+
       const res = await fetch("/api/facturas/resolver", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          factura_pk: facturaSeleccionada.PK, 
-          numero_documento: facturaSeleccionada.numero_documento, 
-          s3_key_voucher: selectedVoucher.s3_key, 
-          PK_Voucher: selectedVoucher.PK 
-        })
+        body: JSON.stringify(payloadBase)
       });
       const data = await res.json();
       if (data.success) {
@@ -104,30 +126,33 @@ export default function TriajeView() {
   const userRucs = new Set(empresas.map(e => e.ruc));
 
   const vouchersPorEmpresa = vouchers.filter(v => {
-      if (!userRucs.has(v.empresa_emisora_ruc)) return false; // Bloqueo de seguridad
+      if (!userRucs.has(v.empresa_emisora_ruc)) return false; 
       if (empresaFiltro && v.empresa_emisora_ruc !== empresaFiltro) return false;
       return true;
   });
 
   const metricas = {
     altos: vouchersPorEmpresa.filter(v => v.conciliacion?.nivel_confianza === "ALTO").length,
-    ambiguos: vouchersPorEmpresa.filter(v => v.conciliacion?.nivel_confianza === "AMBIGUO").length,
+    // 🚨 Vinculamos AMBIGUO del frontend con el MEDIO del backend
+    ambiguos: vouchersPorEmpresa.filter(v => ["AMBIGUO", "MEDIO"].includes(v.conciliacion?.nivel_confianza)).length,
     manual: vouchersPorEmpresa.filter(v => ["BAJO", "SIN_MATCH"].includes(v.conciliacion?.nivel_confianza)).length,
   };
 
   const filteredVouchers = vouchersPorEmpresa.filter((v) => {
     const term = searchTerm.toLowerCase();
-    const clienteSugerido = v.conciliacion?.factura_sugerida?.cliente || "sin match";
-    const matchSearch = !term || v.fileName?.toLowerCase().includes(term) || clienteSugerido.toLowerCase().includes(term) || v.conciliacion?.justificacion?.toLowerCase().includes(term);
+    const infoSug = getSugerenciaInfo(v.conciliacion);
+    const matchSearch = !term || v.fileName?.toLowerCase().includes(term) || infoSug.cliente.toLowerCase().includes(term) || v.conciliacion?.justificacion?.toLowerCase().includes(term);
+    
     let matchNivel = true;
     const nivelIA = v.conciliacion?.nivel_confianza || "SIN_MATCH";
     if (nivelFiltro !== "TODOS") {
-      matchNivel = nivelFiltro === "MANUAL" ? ["BAJO", "SIN_MATCH"].includes(nivelIA) : nivelIA === nivelFiltro;
+      if (nivelFiltro === "AMBIGUO") matchNivel = ["AMBIGUO", "MEDIO"].includes(nivelIA);
+      else if (nivelFiltro === "MANUAL") matchNivel = ["BAJO", "SIN_MATCH"].includes(nivelIA);
+      else matchNivel = nivelIA === nivelFiltro;
     }
     return matchSearch && matchNivel;
   });
 
-  // Helper para obtener nombre de empresa
   const getEmpresaNombre = (ruc: string) => {
     const emp = empresas.find(e => e.ruc === ruc);
     return emp ? emp.nombreOriginal : "Empresa Desconocida";
@@ -191,38 +216,41 @@ export default function TriajeView() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {filteredVouchers.map(v => (
-                <tr key={v.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(v.PK) ? 'bg-indigo-50/30' : ''}`}>
-                  <td className="px-4 py-4 text-center"><input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(v.PK)} onChange={() => toggleSelectOne(v.PK)} /></td>
-                  <td className="p-4"><p className="font-medium text-gray-900 truncate max-w-[150px]">{v.fileName}</p></td>
-                  <td className="p-4">
-                    <p className="font-bold text-indigo-700 text-sm truncate max-w-[180px]" title={getEmpresaNombre(v.empresa_emisora_ruc)}>{getEmpresaNombre(v.empresa_emisora_ruc)}</p>
-                    <p className="text-xs text-gray-500 font-mono mt-0.5">RUC: {v.empresa_emisora_ruc || 'N/A'}</p>
-                  </td>
-                  <td className="p-4">
-                    <p className="text-gray-900 font-medium">{v.conciliacion?.factura_sugerida?.cliente || 'No detectado'}</p>
-                    <p className="text-xs text-gray-500 font-mono mt-1">Sugerido: {v.conciliacion?.factura_sugerida?.numero_documento || '---'}</p>
-                  </td>
-                  <td className="p-4"><p className="text-xs text-gray-600 line-clamp-2 max-w-xs">{v.conciliacion?.justificacion}</p></td>
-                  <td className="p-4 text-center">
-                    <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${v.conciliacion?.nivel_confianza === "ALTO" ? "bg-green-100 text-green-800" : v.conciliacion?.nivel_confianza === "AMBIGUO" ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>
-                      {v.conciliacion?.nivel_confianza}
-                    </span>
-                  </td>
-                  <td className="p-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => handleDelete([v])} className="bg-white border border-red-200 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Borrar</button>
-                      <button onClick={() => setSelectedVoucher(v)} className="bg-indigo-600 border border-transparent text-white hover:bg-indigo-700 px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Resolver</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filteredVouchers.map(v => {
+                const infoSug = getSugerenciaInfo(v.conciliacion);
+                return (
+                  <tr key={v.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(v.PK) ? 'bg-indigo-50/30' : ''}`}>
+                    <td className="px-4 py-4 text-center"><input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(v.PK)} onChange={() => toggleSelectOne(v.PK)} /></td>
+                    <td className="p-4"><p className="font-medium text-gray-900 truncate max-w-[150px]">{v.fileName}</p></td>
+                    <td className="p-4">
+                      <p className="font-bold text-indigo-700 text-sm truncate max-w-[180px]" title={getEmpresaNombre(v.empresa_emisora_ruc)}>{getEmpresaNombre(v.empresa_emisora_ruc)}</p>
+                      <p className="text-xs text-gray-500 font-mono mt-0.5">RUC: {v.empresa_emisora_ruc || 'N/A'}</p>
+                    </td>
+                    <td className="p-4">
+                      {/* 🚨 AQUÍ SE IMPRIME LA SUGERENCIA CORREGIDA */}
+                      <p className="text-gray-900 font-medium">{infoSug.cliente}</p>
+                      <p className="text-xs text-gray-500 font-mono mt-1">Sugerido: {infoSug.doc}</p>
+                    </td>
+                    <td className="p-4"><p className="text-xs text-gray-600 line-clamp-2 max-w-xs">{v.conciliacion?.justificacion}</p></td>
+                    <td className="p-4 text-center">
+                      <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${v.conciliacion?.nivel_confianza === "ALTO" ? "bg-green-100 text-green-800" : ["AMBIGUO", "MEDIO"].includes(v.conciliacion?.nivel_confianza) ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>
+                        {v.conciliacion?.nivel_confianza === "MEDIO" ? "AMBIGUO" : v.conciliacion?.nivel_confianza}
+                      </span>
+                    </td>
+                    <td className="p-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => handleDelete([v])} className="bg-white border border-red-200 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Borrar</button>
+                        <button onClick={() => setSelectedVoucher(v)} className="bg-indigo-600 border border-transparent text-white hover:bg-indigo-700 px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Resolver</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
       </div>
       
-      {/* SE PASA LA LISTA DE EMPRESAS AL MODAL PARA IDENTIFICAR NOMBRES */}
       <ResolucionModal voucher={selectedVoucher} onClose={() => setSelectedVoucher(null)} onConfirm={handleConfirm} isResolving={isResolving} empresas={empresas} />
     </div>
   );

@@ -2,174 +2,182 @@
 
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
-
-type Empresa = {
-  nombreOriginal: string;
-  ruc: string;
-  fechaCreacion: string;
-  estado: string;
-};
+import { Plus, Edit2, Trash2, Search, Book } from "lucide-react"; // Se agregó 'Book'
+import EmpresaModal from "../modals/EmpresaModal";
+import DiccionarioModal from "../modals/DiccionarioModal"; // 🚨 Importamos el nuevo modal
 
 export default function EmpresasView() {
-  const { data: session, status } = useSession();
-
-  const [empresas, setEmpresas] = useState<Empresa[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-
+  const { data: session } = useSession();
+  
+  const [empresas, setEmpresas] = useState<any[]>([]);
+  const [filteredEmpresas, setFilteredEmpresas] = useState<any[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [formData, setFormData] = useState({ nombre: "", ruc: "" });
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [selectedEmpresa, setSelectedEmpresa] = useState<any | null>(null);
 
-  const getUserIdentifier = () => {
-    if (!session?.user) return null;
-    return session.user.email || session.user.name || "usuario_local";
-  };
+  // 🚨 Nuevos estados para el Diccionario
+  const [isDictModalOpen, setIsDictModalOpen] = useState(false);
+  const [selectedDictEmpresa, setSelectedDictEmpresa] = useState<any | null>(null);
 
   const fetchEmpresas = async () => {
-    const userId = getUserIdentifier();
-    if (status === "loading" || !userId) return;
-    
-    setIsLoading(true);
+    if (!session?.user?.email) return;
     try {
-      const res = await fetch(`/api/empresas?usuarioId=${encodeURIComponent(userId)}`);
-      const json = await res.json();
-      if (json.success) {
-        const sorted = json.data.sort((a: any, b: any) => 
-          new Date(b.fechaCreacion).getTime() - new Date(a.fechaCreacion).getTime()
-        );
-        setEmpresas(sorted);
+      const res = await fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`);
+      const data = await res.json();
+      if (data.success) {
+        setEmpresas(data.data);
+        setFilteredEmpresas(data.data);
       }
     } catch (error) {
       console.error("Error al cargar empresas:", error);
-    } finally {
-      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    if (status === "authenticated") fetchEmpresas();
-  }, [status, session]);
+    fetchEmpresas();
+  }, [session]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setStatusMessage(null);
+  useEffect(() => {
+    const term = searchTerm.toLowerCase();
+    const filtered = empresas.filter(emp => 
+      emp.nombreOriginal?.toLowerCase().includes(term) ||
+      emp.ruc?.toLowerCase().includes(term) ||
+      emp.alias?.toLowerCase().includes(term)
+    );
+    setFilteredEmpresas(filtered);
+  }, [searchTerm, empresas]);
 
-    if (formData.ruc.length !== 11 || isNaN(Number(formData.ruc))) {
-      setStatusMessage({ type: 'error', text: "El RUC debe tener exactamente 11 dígitos numéricos." });
-      setIsSubmitting(false);
-      return;
-    }
+  const handleEdit = (empresa: any) => {
+    setSelectedEmpresa(empresa);
+    setIsModalOpen(true);
+  };
 
-    const userId = getUserIdentifier();
-    if (!userId) {
-      setStatusMessage({ type: 'error', text: "No se pudo identificar tu sesión." });
-      setIsSubmitting(false);
-      return;
-    }
+  // 🚨 Función para abrir el modal del diccionario
+  const handleOpenDict = (empresa: any) => {
+    setSelectedDictEmpresa(empresa);
+    setIsDictModalOpen(true);
+  };
 
+  const handleDelete = async (ruc: string) => {
+    if (!window.confirm("¿Seguro que deseas eliminar esta empresa?")) return;
     try {
-      const res = await fetch("/api/empresas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...formData, usuarioId: userId })
-      });
-
+      const res = await fetch(`/api/empresas?ruc=${ruc}`, { method: "DELETE" });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ocurrió un error al guardar.");
-
-      setFormData({ nombre: "", ruc: "" });
-      setIsModalOpen(false);
-      fetchEmpresas(); 
-    } catch (error: any) {
-      setStatusMessage({ type: 'error', text: error.message });
-    } finally {
-      setIsSubmitting(false);
+      if (data.success) {
+        fetchEmpresas();
+      } else {
+        alert(data.error);
+      }
+    } catch (error) {
+      alert("Error al eliminar la empresa.");
     }
   };
 
   return (
-    <div className="animate-fadeIn">
-      <div className="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Directorio de Empresas</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Mis Empresas</h1>
           <p className="text-gray-500 mt-1">
-            Administra las empresas que emiten facturas. El sistema las usará para etiquetar las facturas pendientes.
+            Gestiona los RUCs emisores vinculados a tu cuenta.
           </p>
         </div>
         <button 
-          onClick={() => setIsModalOpen(true)}
-          className="bg-indigo-600 border border-transparent text-white px-5 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center gap-2 text-sm"
+          onClick={() => { setSelectedEmpresa(null); setIsModalOpen(true); }}
+          className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-indigo-700 transition-all shadow-sm"
         >
-          <span>+</span> Nueva Empresa
+          <Plus className="w-5 h-5" />
+          Nueva Empresa
         </button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        {isLoading ? (
-          <div className="flex justify-center items-center h-48"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>
-        ) : empresas.length === 0 ? (
-          <div className="text-center py-16 text-gray-500 flex flex-col items-center">
-            <p className="text-lg font-medium text-gray-800">No tienes empresas registradas</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">Razón Social</th>
-                  <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">RUC</th>
-                  <th className="px-6 py-4 text-center text-xs font-semibold text-gray-500 uppercase">Estado</th>
-                  <th className="px-6 py-4 text-right text-xs font-semibold text-gray-500 uppercase">Fecha</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {empresas.map((empresa, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50 transition-colors text-sm">
-                    <td className="px-6 py-4 font-bold text-gray-900">{empresa.nombreOriginal}</td>
-                    <td className="px-6 py-4 text-indigo-600 font-mono font-medium">{empresa.ruc}</td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="px-2.5 py-1 bg-green-100 text-green-800 text-xs font-bold rounded-full border border-green-200">{empresa.estado}</span>
-                    </td>
-                    <td className="px-6 py-4 text-right text-gray-500">{new Date(empresa.fechaCreacion).toLocaleDateString('es-PE')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* MODAL */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setIsModalOpen(false)}>
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center p-6 border-b border-gray-100">
-              <h2 className="text-xl font-bold text-gray-800">Registrar Empresa</h2>
-              <button onClick={() => { setIsModalOpen(false); setStatusMessage(null); }} className="text-gray-400 hover:text-gray-600 text-2xl font-bold px-2">&times;</button>
-            </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-5">
-              <div className="flex flex-col space-y-1.5">
-                <label className="text-sm font-bold text-gray-700">Razón Social <span className="text-red-500">*</span></label>
-                <input type="text" required placeholder="Ej. CONSULTORA AQTIVA S.A.C" value={formData.nombre} onChange={(e) => setFormData({ ...formData, nombre: e.target.value })} className="border border-gray-300 rounded-lg p-3 text-sm focus:ring-indigo-500 outline-none uppercase bg-gray-50" />
-              </div>
-              <div className="flex flex-col space-y-1.5">
-                <label className="text-sm font-bold text-gray-700">Número de RUC <span className="text-red-500">*</span></label>
-                <input type="text" required maxLength={11} placeholder="Ej. 20123456789" value={formData.ruc} onChange={(e) => setFormData({ ...formData, ruc: e.target.value })} className="border border-gray-300 rounded-lg p-3 text-sm focus:ring-indigo-500 outline-none font-mono bg-gray-50" />
-              </div>
-              {statusMessage && (
-                <div className={`p-3 rounded-lg text-sm font-medium ${statusMessage.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>{statusMessage.text}</div>
-              )}
-              <div className="pt-4 flex justify-end gap-3 border-t border-gray-100 mt-6">
-                <button type="button" onClick={() => { setIsModalOpen(false); setStatusMessage(null); }} className="px-4 py-2 text-gray-600 hover:text-gray-900 font-medium">Cancelar</button>
-                <button type="submit" disabled={isSubmitting} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg shadow-md disabled:opacity-50">
-                  {isSubmitting ? "Guardando..." : "Crear Empresa"}
-                </button>
-              </div>
-            </form>
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-4 border-b border-gray-100">
+          <div className="relative max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+            <input 
+              type="text" 
+              placeholder="Buscar por RUC, nombre o alias..." 
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:bg-white transition-all outline-none"
+            />
           </div>
         </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm text-gray-600">
+            <thead className="bg-gray-50/50 text-gray-500 font-medium">
+              <tr>
+                <th className="px-6 py-4">RUC</th>
+                <th className="px-6 py-4">Razón Social (SCT)</th>
+                <th className="px-6 py-4">Alias Interno</th>
+                <th className="px-6 py-4 text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredEmpresas.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-6 py-12 text-center text-gray-500">
+                    No se encontraron empresas registradas.
+                  </td>
+                </tr>
+              ) : (
+                filteredEmpresas.map((emp) => (
+                  <tr key={emp.ruc} className="hover:bg-gray-50/50 transition-colors">
+                    <td className="px-6 py-4 font-mono font-medium text-gray-900">{emp.ruc}</td>
+                    <td className="px-6 py-4 font-medium text-gray-900">{emp.nombreOriginal}</td>
+                    <td className="px-6 py-4 text-gray-500">{emp.alias || "---"}</td>
+                    <td className="px-6 py-4">
+                      <div className="flex justify-end gap-2">
+                        {/* 🚨 Botón para configurar el Diccionario S3 */}
+                        <button 
+                          onClick={() => handleOpenDict(emp)}
+                          title="Gestionar Diccionario IA"
+                          className="p-2 text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors"
+                        >
+                          <Book className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleEdit(emp)}
+                          className="p-2 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(emp.ruc)}
+                          className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {isModalOpen && (
+        <EmpresaModal 
+          empresa={selectedEmpresa}
+          onClose={() => setIsModalOpen(false)}
+          onSuccess={fetchEmpresas}
+        />
+      )}
+
+      {/* 🚨 Modal del Diccionario */}
+      {isDictModalOpen && selectedDictEmpresa && (
+        <DiccionarioModal 
+          empresa={selectedDictEmpresa}
+          onClose={() => {
+            setIsDictModalOpen(false);
+            setSelectedDictEmpresa(null);
+          }}
+        />
       )}
     </div>
   );

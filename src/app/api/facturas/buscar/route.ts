@@ -35,7 +35,9 @@ export async function GET(req: Request) {
       items = items.filter((item: any) => 
         (item.numero_documento && item.numero_documento.toLowerCase().includes(queryTerm)) ||
         (item.cliente && item.cliente.toLowerCase().includes(queryTerm)) ||
-        (item.ruc_cliente && item.ruc_cliente.toLowerCase().includes(queryTerm))
+        (item.ruc_cliente && item.ruc_cliente.toLowerCase().includes(queryTerm)) ||
+        (item.monto && item.monto.toString().includes(queryTerm)) ||
+        (item.monto_neto_pagar && item.monto_neto_pagar.toString().includes(queryTerm))
       );
     }
 

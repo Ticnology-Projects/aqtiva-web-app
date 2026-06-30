@@ -1,7 +1,37 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react"; // 🚨 Agregamos la sesión
+import { useSession } from "next-auth/react";
+
+// ==========================================
+// COMPONENTE: VISOR DE IMAGEN DEL VOUCHER
+// ==========================================
+const VisorVoucher = ({ s3_key }: { s3_key: string }) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch("/api/vouchers/image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ s3_key_json: s3_key })
+    })
+      .then(res => res.json())
+      .then(data => { if (data.success) setUrl(data.url); })
+      .catch(err => console.error(err))
+      .finally(() => setLoading(false));
+  }, [s3_key]);
+
+  if (loading) return <div className="h-full min-h-[300px] flex items-center justify-center bg-gray-50 rounded-xl border border-dashed"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
+  if (!url) return <div className="h-full min-h-[300px] bg-gray-50 rounded-xl border border-dashed flex items-center justify-center text-sm text-gray-400 font-medium">No se pudo cargar la imagen</div>;
+  
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-100 p-2 flex justify-center items-center shadow-inner h-full max-h-[70vh]">
+      <img src={url} alt="Voucher físico" className="max-h-full max-w-full object-contain rounded shadow-sm" />
+    </div>
+  );
+};
 
 // ==========================================
 // COMPONENTE: REPORTE LEGIBLE DE IA
@@ -75,22 +105,19 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
 };
 
 export default function AuditoriaView() {
-  const { data: session } = useSession(); // 🚨 Obtenemos la sesión actual
-  const [empresas, setEmpresas] = useState<any[]>([]); // 🚨 Estado para empresas
+  const { data: session } = useSession();
+  const [empresas, setEmpresas] = useState<any[]>([]);
   const [auditorias, setAuditorias] = useState<any[]>([]);
-  const [vouchers, setVouchers] = useState<any[]>([]); // 🚨 Estado para almacenar los vouchers y ver la IA
+  const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoadingAuditoria, setIsLoadingAuditoria] = useState(false);
   
-  // NUEVO: Estado para el modal de detalle de IA
   const [auditParaVerIA, setAuditParaVerIA] = useState<any | null>(null);
 
-  // NUEVO: Estado para el buscador
   const [searchTerm, setSearchTerm] = useState("");
   const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
 
   const fetchAuditoria = () => {
     setIsLoadingAuditoria(true);
-    // Traemos ambos para que al dar clic al documento tengamos la IA lista
     Promise.all([
       fetch("/api/auditoria").then(res => res.json()),
       fetch("/api/vouchers/all").then(res => res.json())
@@ -103,7 +130,6 @@ export default function AuditoriaView() {
       .finally(() => setIsLoadingAuditoria(false));
   };
 
-  // 🚨 AISLAMIENTO: Cargamos empresas del usuario primero y luego auditorías
   useEffect(() => {
     if (!session?.user?.email) return;
 
@@ -174,7 +200,6 @@ export default function AuditoriaView() {
   const handleExportarBackup = () => {
     const cabeceras = ["Fecha y Hora", "ID Ticket", "Documento", "Voucher", "Estado", "Acción"];
     
-    // 🚨 AISLAMIENTO EN EXPORTACIÓN: Filtramos el CSV también
     const userRucs = new Set(empresas.map((e: any) => e.ruc));
     const auditoriasDelUsuario = auditorias.filter(audit => {
       const rucTicket = audit.empresa_emisora_ruc || (audit.factura_vinculada_pk ? audit.factura_vinculada_pk.split('#')[1] : null);
@@ -201,36 +226,47 @@ export default function AuditoriaView() {
     document.body.removeChild(link);
   };
 
-  // 🚨 NUEVA FUNCIÓN: Abre el modal cruzando los datos
+  // 🚨 FUNCIÓN MEJORADA: Decide dinámicamente si mostrar la imagen
   const handleVerDetalle = (audit: any) => {
     if (!audit.voucher_vinculado) {
       alert("Esta conciliación fue estrictamente manual sin voucher asociado.");
       return;
     }
+
+    const esFacturaReal = audit.numero_documento !== "VOUCHER";
     const voucherEncontrado = vouchers.find(v => v.s3_key === audit.voucher_vinculado);
+
     if (voucherEncontrado && voucherEncontrado.conciliacion) {
       setAuditParaVerIA({
         ...voucherEncontrado.conciliacion,
-        _fileName: voucherEncontrado.fileName
+        _fileName: voucherEncontrado.fileName,
+        _s3_key: audit.voucher_vinculado,
+        _showImage: esFacturaReal
       });
     } else {
-      alert("Este registro no cuenta con un análisis de Inteligencia Artificial disponible.");
+      // Si fue manual (sin IA) pero sí hay una factura vinculada, mostramos la imagen
+      if (esFacturaReal) {
+        setAuditParaVerIA({
+          nivel_confianza: null,
+          _fileName: audit.voucher_vinculado.split('/').pop(),
+          _s3_key: audit.voucher_vinculado,
+          _showImage: true
+        });
+      } else {
+        alert("Este registro no cuenta con un análisis de Inteligencia Artificial disponible.");
+      }
     }
   };
 
-  // 🚨 LÓGICA DE FILTRADO COMBINADO (Mantiene TUS reglas de origen intactas)
   const userRucs = new Set(empresas.map((e: any) => e.ruc));
 
   const filteredAuditorias = auditorias.filter(audit => {
-    // 🚨 Aislamiento Inteligente: Busca el RUC en la empresa emisora o lo extrae de la PK
     const rucTicket = audit.empresa_emisora_ruc || (audit.factura_vinculada_pk ? audit.factura_vinculada_pk.split('#')[1] : null);
     if (!rucTicket || !userRucs.has(rucTicket)) return false;
 
-    // 1. Filtro de Pestañas (TUS REGLAS ORIGINALES)
     if (filtroOrigen === "AUTO_IA" && audit.tipo_accion !== "AUTO_CONCILIACION") return false;
     if (filtroOrigen === "MANUAL" && (audit.tipo_accion === "AUTO_CONCILIACION" || audit.tipo_accion === "REVERSION")) return false;
 
-    // 2. Filtro de Búsqueda (TUS REGLAS ORIGINALES)
     if (!searchTerm) return true;
     const term = searchTerm.toLowerCase();
     const idStr = audit.PK.replace("AUDIT#", "").toLowerCase();
@@ -273,7 +309,6 @@ export default function AuditoriaView() {
           />
         </div>
 
-        {/* Pestañas de Filtro */}
         <div className="flex bg-gray-100 p-1 rounded-lg w-full md:w-auto shrink-0">
           <button onClick={() => setFiltroOrigen("TODOS")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 md:flex-none ${filtroOrigen === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500 hover:text-gray-700"}`}>Todos</button>
           <button onClick={() => setFiltroOrigen("AUTO_IA")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center justify-center gap-1 flex-1 md:flex-none ${filtroOrigen === "AUTO_IA" ? "bg-indigo-100 text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
@@ -320,11 +355,10 @@ export default function AuditoriaView() {
                         </span>
                       </td>
                       <td className={`px-6 py-4 font-bold ${audit.estado === "ANULADO" ? "text-gray-500 line-through" : "text-indigo-700"}`}>
-                        {/* 🚨 AQUÍ EL TEXTO SE CONVIERTE EN BOTÓN INTERACTIVO */}
                         <button 
                           onClick={() => handleVerDetalle(audit)}
                           className="focus:outline-none text-left hover:underline hover:text-indigo-900 transition-colors"
-                          title="Ver el reporte de Inteligencia Artificial asociado"
+                          title="Ver detalles de la conciliación"
                         >
                           {audit.numero_documento}
                         </button>
@@ -345,13 +379,11 @@ export default function AuditoriaView() {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-2">
-                          {/* El botón de reversar existente */}
                           {audit.estado === "AUDITADO" && audit.tipo_accion !== "REVERSION" && (
                             <button onClick={() => handleReversar(audit)} className="text-red-600 hover:text-red-900 font-semibold text-xs border border-red-200 hover:border-red-400 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-colors">
                               Reversar
                             </button>
                           )}
-                          {/* EL NUEVO BOTÓN DE ELIMINAR */}
                           <button onClick={() => handleEliminarAuditoria(audit)} className="text-gray-500 hover:text-gray-800 font-semibold text-xs border border-gray-200 hover:border-gray-400 bg-white hover:bg-gray-100 px-3 py-1.5 rounded transition-colors" title="Borrar registro permanentemente">
                             Borrar
                           </button>
@@ -369,18 +401,48 @@ export default function AuditoriaView() {
       {/* 🚨 MODAL DEL REPORTE IA (Se activa al dar clic en el nombre de la factura) */}
       {auditParaVerIA && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setAuditParaVerIA(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className={`bg-white rounded-2xl shadow-2xl w-full ${auditParaVerIA._showImage ? 'max-w-5xl' : 'max-w-2xl'} max-h-[90vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100 bg-gray-50 shrink-0">
               <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                🤖 Detalles del Análisis IA
+                {auditParaVerIA._showImage ? '📸 Detalle de la Conciliación' : '🤖 Detalles del Análisis IA'}
               </h2>
               <button onClick={() => setAuditParaVerIA(null)} className="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
             </div>
-            <div className="p-6 overflow-y-auto flex-1 bg-white custom-scrollbar">
-              {auditParaVerIA._fileName && (
-                <p className="text-sm font-mono text-gray-500 mb-4 bg-gray-100 p-2 rounded truncate">Comprobante de origen: {auditParaVerIA._fileName}</p>
+            
+            <div className={`p-6 overflow-y-auto flex-1 bg-white custom-scrollbar ${auditParaVerIA._showImage ? 'grid grid-cols-1 md:grid-cols-2 gap-6' : ''}`}>
+              
+              {/* 🚨 LADO IZQUIERDO: LA IMAGEN DEL VOUCHER */}
+              {auditParaVerIA._showImage && (
+                <div className="flex flex-col space-y-3 h-full">
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Comprobante Físico</h3>
+                  {auditParaVerIA._fileName && (
+                    <p className="text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 p-2 rounded truncate shadow-sm">
+                      Origen: {auditParaVerIA._fileName}
+                    </p>
+                  )}
+                  <div className="flex-1">
+                    <VisorVoucher s3_key={auditParaVerIA._s3_key} />
+                  </div>
+                </div>
               )}
-              <ReporteIAHumano data={auditParaVerIA} />
+              
+              {/* 🚨 LADO DERECHO: EL REPORTE DE IA O MENSAJE MANUAL */}
+              <div className="flex flex-col h-full">
+                  {!auditParaVerIA._showImage && auditParaVerIA._fileName && (
+                    <p className="text-sm font-mono text-gray-500 mb-4 bg-gray-100 p-2 rounded truncate">Comprobante de origen: {auditParaVerIA._fileName}</p>
+                  )}
+                  
+                  {auditParaVerIA.nivel_confianza ? (
+                    <ReporteIAHumano data={auditParaVerIA} />
+                  ) : (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 p-8 rounded-xl h-full flex flex-col justify-center items-center text-center min-h-[300px]">
+                       <svg className="w-16 h-16 text-amber-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                       <h3 className="font-bold text-xl mb-2">Conciliación Manual</h3>
+                       <p className="text-sm font-medium">Esta factura fue vinculada al voucher de manera manual por el auditor o usando el buscador avanzado. No existe un diagnóstico de la Inteligencia Artificial para esta transacción específica.</p>
+                    </div>
+                  )}
+              </div>
+
             </div>
           </div>
         </div>

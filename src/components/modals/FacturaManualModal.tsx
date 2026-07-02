@@ -6,7 +6,7 @@ import { useSession } from "next-auth/react";
 
 interface FacturaManualModalProps {
   rucEmisor: string;
-  empresaNombre: string; // Recibe el nombre de la empresa
+  empresaNombre: string; // Recibe el nombre de la empresa emisora
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -20,12 +20,12 @@ export default function FacturaManualModal({ rucEmisor, empresaNombre, onClose, 
     numero_documento: "",
     cliente: "",
     ruc_cliente: "",
-    monto_total: "", // Se ingresa el BRUTO
-    moneda: "SOLES", // Homologado con carga masiva
+    monto_total: "", 
+    moneda: "SOLES", 
     fecha_emision: "",
     fecha_vencimiento: "",
     tiene_detraccion: false,
-    tasa_detraccion: "" // Input dinámico
+    tasa_detraccion: "" 
   }]);
 
   const handleAddRow = () => {
@@ -55,9 +55,9 @@ export default function FacturaManualModal({ rucEmisor, empresaNombre, onClose, 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
             rucEmisor, 
-            empresaNombre, 
+            empresaNombre, // Se inyecta la empresa emisora correctamente
             facturas, 
-            emailUsuario: session.user.email // 🚨 Sello Multi-tenant
+            emailUsuario: session.user.email 
         })
       });
 
@@ -88,7 +88,6 @@ export default function FacturaManualModal({ rucEmisor, empresaNombre, onClose, 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 uppercase">Documento</label>
-                  {/* Forzar mayúsculas visualmente y en el estado */}
                   <input type="text" required value={fac.numero_documento} onChange={e => handleChange(fac.id, 'numero_documento', e.target.value.toUpperCase())} placeholder="F001-1234" className="w-full px-3 py-2 border rounded-lg text-sm font-mono uppercase" />
                 </div>
                 <div className="col-span-2">
@@ -124,7 +123,6 @@ export default function FacturaManualModal({ rucEmisor, empresaNombre, onClose, 
                   <input type="checkbox" checked={fac.tiene_detraccion} onChange={e => handleChange(fac.id, 'tiene_detraccion', e.target.checked)} className="rounded text-indigo-600" /> Detracción
                 </label>
                 
-                {/* 🚨 INPUT CONDICIONAL PARA TASA DE DETRACCIÓN */}
                 {fac.tiene_detraccion && (
                   <input 
                     type="number" 

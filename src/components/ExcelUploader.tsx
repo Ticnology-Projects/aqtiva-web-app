@@ -18,11 +18,14 @@ export function ExcelUploader() {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 1. Cargar las empresas del usuario al inicio
+  // 1. Cargar las empresas del usuario o tenant al inicio
   useEffect(() => {
-    if (!session?.user?.email) return; // 🚨 Aseguramos que exista la sesión
+    if (!session?.user?.email) return; 
     
-    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+    // 🚨 MAGIA MULTI-TENANT: Usamos tenantId si existe, sino el email de la sesión
+    const tenantId = (session.user as any).tenantId || session.user.email;
+
+    fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(data => {
         if (data.success) setEmpresas(data.data);
@@ -31,10 +34,9 @@ export function ExcelUploader() {
       .finally(() => setIsLoadingEmpresas(false));
   }, [session]);
 
-  // Manejo de Drag & Drop
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    if (!selectedEmpresa) return; // No permitir drop si no hay empresa seleccionada
+    if (!selectedEmpresa) return;
     setIsDragOver(true);
   }, [selectedEmpresa]);
 
@@ -58,12 +60,10 @@ export function ExcelUploader() {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       await processFile(e.target.files[0]);
-      e.target.value = ''; // Limpiar input
+      e.target.value = ''; 
     }
   };
 
-  // Función principal de procesamiento
-  // Función principal de procesamiento
   const processFile = async (file: File) => {
     setIsUploading(true);
     setMessage(null);
@@ -81,6 +81,9 @@ export function ExcelUploader() {
       if (jsonData.length === 0) throw new Error("El archivo está vacío o no es válido.");
 
       const empresaData = empresas.find(e => e.ruc === selectedEmpresa);
+      
+      // 🚨 SELLADO DE TENANT PARA LA IMPORTACIÓN
+      const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
 
       const res = await fetch("/api/facturas/import", {
         method: "POST",
@@ -90,7 +93,8 @@ export function ExcelUploader() {
           fuenteOriginal: file.name,
           empresaEmisoraRuc: selectedEmpresa,
           empresaEmisoraNombre: empresaData?.nombreOriginal || "Desconocida",
-          usuarioId: session?.user?.email || "anonimo"
+          // Pasamos explícitamente el tenantId para que queden vinculadas al dueño
+          usuarioId: tenantId 
         }),
       });
 
@@ -139,7 +143,7 @@ export function ExcelUploader() {
             </select>
           )}
           {empresas.length === 0 && !isLoadingEmpresas && (
-            <p className="text-xs text-amber-600">No tienes empresas creadas. Ve al "Directorio RUCs" para registrar tu primera empresa.</p>
+            <p className="text-xs text-amber-600">El catálogo de empresas está vacío. Comunícate con el Administrador para registrarlas.</p>
           )}
         </div>
 

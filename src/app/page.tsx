@@ -11,10 +11,11 @@ import AuditoriaView from "@/components/views/AuditoriaView";
 import EmpresasView from "@/components/views/EmpresasView";
 import DashboardView from "@/components/views/DashboardView";
 import BovedaView from "@/components/views/BovedaView";
+import EquipoView from "@/components/views/EquipoView";
 
 export default function ApplicationLayout() {
   const { status } = useSession();
-  const [activeNav, setActiveNav] = useState<"dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas" | "boveda">("carga-masiva");
+  const [activeNav, setActiveNav] = useState<"dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas" | "boveda" | "equipo">("carga-masiva");
 
   if (status === "loading") return <div className="min-h-screen bg-gray-50"></div>;
 
@@ -30,6 +31,7 @@ export default function ApplicationLayout() {
         {activeNav === "auditoria" && <AuditoriaView />}
         {activeNav === "empresas" && <EmpresasView />}
         {activeNav === "boveda" && <BovedaView />}
+        {activeNav === "equipo" && <EquipoView />}
       </main>
     </div>
   );

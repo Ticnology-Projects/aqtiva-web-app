@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react"; // 🚨 1. Importamos la sesión
+import { useSession } from "next-auth/react";
 import {
   Chart as ChartJS,
   ArcElement,
@@ -44,12 +44,16 @@ export default function DashboardView() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // Verificamos que exista el usuario y definimos el tenantId
     if (!session?.user?.email) return;
+    
+    // 🚨 MAGIA MULTI-TENANT: Usamos tenantId si existe, sino el email
+    const tenantId = (session.user as any).tenantId || session.user.email;
 
     Promise.all([
-      fetch("/api/facturas").then((res) => res.json()),
-      fetch("/api/vouchers").then((res) => res.json()),
-      fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`).then((res) => res.json())
+      fetch(`/api/facturas?tenantId=${encodeURIComponent(tenantId)}`).then((res) => res.json()),
+      fetch("/api/vouchers").then((res) => res.json()), // Ojo: Si vouchers también es multi-tenant, agrégale el parámetro aquí
+      fetch(`/api/empresas?usuarioId=${encodeURIComponent(tenantId)}`).then((res) => res.json())
     ])
       .then(([facturasData, vouchersData, empresasData]) => {
         if (facturasData.success) setFacturas(facturasData.data);
@@ -60,7 +64,7 @@ export default function DashboardView() {
       .finally(() => setIsLoading(false));
   }, [session]);
 
-  // Aislamiento Multi-Tenant
+  // Aislamiento Multi-Tenant (Filtrado cruzado)
   const userRucs = new Set(empresas.map((e: any) => e.ruc));
   const misFacturas = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
   const misVouchers = vouchers.filter(v => userRucs.has(v.empresa_emisora_ruc));
@@ -73,7 +77,7 @@ export default function DashboardView() {
   const facturasPendientes = misFacturas.filter(f => f.estado === "PENDIENTE");
   const vouchersEnTriaje = misVouchers.filter(v => v.estado === "PENDIENTE_REVISION");
   
-  // 🚨 NUEVOS CONTADORES: Vencidas y En Cobranza
+  // NUEVOS CONTADORES: Vencidas y En Cobranza
   const facturasVencidas = misFacturas.filter(f => f.estado !== "COBRADO" && verificarSiEstaVencida(f.fecha_vencimiento));
   const facturasEnCobranza = misFacturas.filter(f => f.estado === "EN COBRANZA");
 
@@ -119,18 +123,6 @@ export default function DashboardView() {
     cutout: '70%',
   };
 
-  const barData = {
-    labels: ['Flujo Recuperado', 'Por Cobrar', 'En Triaje'],
-    datasets: [
-      {
-        label: 'Monto en Soles (S/)',
-        data: [dineroRecuperado, dineroPendientePuro, dineroEnRevisionPuro],
-        backgroundColor: ['#10B981', '#F59E0B', '#6366F1'],
-        borderRadius: 6,
-      },
-    ],
-  };
-
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -146,7 +138,7 @@ export default function DashboardView() {
         <p className="text-gray-500 mt-1">Métricas de conciliación y cuentas por cobrar en tiempo real.</p>
       </div>
 
-      {/* 🚨 REJILLA DE KPIs EXPANDIDA A 6 ELEMENTOS */}
+      {/* REJILLA DE KPIs EXPANDIDA A 6 ELEMENTOS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         
         {/* KPI 1: Total Catálogo */}
@@ -216,7 +208,7 @@ export default function DashboardView() {
           </p>
         </div>
 
-        {/* 🚨 KPI 5: CONTADOR FACTURAS VENCIDAS */}
+        {/* KPI 5: CONTADOR FACTURAS VENCIDAS */}
         <div className="bg-white rounded-xl shadow-sm border border-red-100 p-5 flex flex-col justify-between bg-red-50/20">
           <div className="flex justify-between items-start">
             <div>
@@ -230,7 +222,7 @@ export default function DashboardView() {
           <p className="text-[10px] text-red-500 mt-4 font-bold uppercase tracking-wide">Requiere Gestión Urgente</p>
         </div>
 
-        {/* 🚨 KPI 6: CONTADOR EN COBRANZA */}
+        {/* KPI 6: CONTADOR EN COBRANZA */}
         <div className="bg-white rounded-xl shadow-sm border border-blue-100 p-5 flex flex-col justify-between bg-blue-50/20">
           <div className="flex justify-between items-start">
             <div>
@@ -246,7 +238,6 @@ export default function DashboardView() {
 
       </div>
 
-      {/* (Gráficos inferiores se mantienen intactos y estables) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col">
           <h2 className="text-lg font-bold text-gray-800 mb-6">Estado de Documentos</h2>

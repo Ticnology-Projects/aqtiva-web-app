@@ -15,7 +15,6 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
-        // Buscamos el perfil del usuario por su email
         const response = await dynamoDb.send(new ScanCommand({
           TableName: "AqtivaChatDB",
           FilterExpression: "email = :email AND SK = :sk",
@@ -27,20 +26,21 @@ export const authOptions: NextAuthOptions = {
 
         const user = response.Items?.[0];
 
-        // Si no existe o está inactivo, rechazamos el login
         if (!user || user.estado !== "ACTIVO") return null;
 
-        // Hasheamos la contraseña ingresada y la comparamos con la de la BD
         const inputHash = crypto.createHash("sha256").update(credentials.password).digest("hex");
         
         if (inputHash === user.passwordHash) {
-          // Retornamos los datos que se guardarán en la sesión (token JWT)
+          // 🚨 MAGIA MULTI-TENANT: Definimos el paraguas de datos
+          const tenantId = user.rol === "ADMIN" ? user.email : user.usuario_propietario;
+
           return { 
-            id: user.userId, 
+            id: user.userId || user.PK, 
             name: user.nombre, 
             email: user.email, 
-            rol: user.rol // Pasamos el rol personalizado
-          };
+            rol: user.rol,
+            tenantId: tenantId // Inyectamos la variable
+          } as any;
         }
 
         return null;
@@ -48,25 +48,25 @@ export const authOptions: NextAuthOptions = {
     })
   ],
   pages: {
-    signIn: "/login", // Le decimos a NextAuth dónde está nuestra vista personalizada
+    signIn: "/login",
   },
   session: {
     strategy: "jwt",
   },
   callbacks: {
-    // Inyectamos el ID y el Rol en el Token
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
         token.rol = (user as any).rol;
+        token.tenantId = (user as any).tenantId; // Lo guardamos en el token
       }
       return token;
     },
-    // Pasamos los datos del Token a la Sesión del navegador
     async session({ session, token }) {
       if (session.user) {
         (session.user as any).id = token.id;
         (session.user as any).rol = token.rol;
+        (session.user as any).tenantId = token.tenantId; // Lo exponemos al frontend
       }
       return session;
     }

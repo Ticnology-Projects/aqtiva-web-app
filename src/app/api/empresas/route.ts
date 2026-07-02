@@ -17,10 +17,12 @@ function cleanBusinessName(name: string): string {
 }
 
 // OBTENER EMPRESAS (Filtradas por usuario)
+// OBTENER EMPRESAS (Filtradas por usuario o tenant)
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const usuarioId = searchParams.get("usuarioId");
+    // 🚨 Aceptamos tenantId (preferido) o usuarioId (legacy)
+    const tenantId = searchParams.get("tenantId") || searchParams.get("usuarioId");
 
     let filterExpression = "begins_with(PK, :prefix) AND SK = :sk";
     let expressionAttributeValues: any = {
@@ -28,9 +30,10 @@ export async function GET(req: Request) {
       ":sk": "METADATA"
     };
 
-    if (usuarioId) {
-      filterExpression += " AND usuario_propietario = :userId";
-      expressionAttributeValues[":userId"] = usuarioId;
+    // 🚨 Filtro Multi-Tenant
+    if (tenantId) {
+      filterExpression += " AND usuario_propietario = :tenantId";
+      expressionAttributeValues[":tenantId"] = tenantId;
     }
 
     const response = await ddbDocClient.send(new ScanCommand({

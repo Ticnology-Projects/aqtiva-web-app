@@ -5,7 +5,6 @@ import { uploadAndMatchInvoice } from "@/lib/api";
 import { useSession } from "next-auth/react";
 
 interface InvoiceUploaderProps {
-  // onUploadSuccess ahora recibe la lista de resultados para que el dashboard los dibuje
   onUploadSuccess: (resultados: any[]) => void; 
 }
 
@@ -26,10 +25,14 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Cargar empresas al inicio
+  // 1. Cargar empresas al inicio usando el TenantId
   useEffect(() => {
     if (!session?.user?.email) return;
-    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+
+    // 🚨 MAGIA MULTI-TENANT: Usamos tenantId si existe
+    const tenantId = (session.user as any).tenantId || session.user.email;
+
+    fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(data => {
         if (data.success) setEmpresas(data.data);
@@ -77,7 +80,7 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
     setCurrentFileIndex(0);
     
     let successCount = 0;
-    let autoConciliados = 0; // 🚨 NUEVO: Contador de auto-conciliados
+    let autoConciliados = 0; 
     const resultadosBatch: any[] = [];
 
     // Procesamos secuencialmente
@@ -92,17 +95,15 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
         
         const conciliacion = result.data?.conciliacion;
         
-        // 🚀 MAGIA STP: Auto-conciliación si hay alta certeza
+        // Auto-conciliación si hay alta certeza
         if (conciliacion?.nivel_confianza === "ALTO" && conciliacion?.factura_sugerida) {
           setFileStatus((prev) => ({ ...prev, [file.name]: "🤖 Match ALTO: Auto-conciliando..." }));
           
-          // Reconstruimos las llaves exactas que DynamoDB espera
           const s3KeyOriginal = result.data.s3_key || "";
           const baseName = s3KeyOriginal.split('/').pop()?.replace('.json', '') || file.name;
           const processedS3Key = `processed/${baseName}.json`;
           const voucherPK = `VOUCHER#${baseName}`;
 
-          // Disparamos la misma API que usa el humano en el Triaje
           const autoRes = await fetch("/api/facturas/resolver", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -123,7 +124,6 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
              setFileStatus((prev) => ({ ...prev, [file.name]: "⚠️ Procesado, pero falló la auto-conciliación" }));
           }
         } else {
-          // Si es Medio, Bajo o Sin Match, se queda solo procesado para revisión manual
           setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado (Enviado a Triaje)" }));
         }
 
@@ -138,7 +138,6 @@ export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
     setIsUploading(false);
     
     setTimeout(() => {
-      // 🚨 NUEVO: Alerta detallada
       alert(`Lote finalizado: ${successCount} comprobantes analizados.\n🤖 ${autoConciliados} se auto-conciliaron y ${successCount - autoConciliados} pasaron a Triaje.`);
       setFiles([]);
       setFileStatus({});

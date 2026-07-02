@@ -2,19 +2,28 @@ import { NextResponse } from "next/server";
 import { ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { dynamoDb } from "@/lib/dynamodb";
 
-// ¡ESTA LÍNEA ES CRÍTICA PARA EVITAR EL CACHÉ VACÍO DE NEXT.JS!
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    // Buscamos todos los registros que empiecen con "VOUCHER#" y que estén pendientes de revisión
+    const { searchParams } = new URL(req.url);
+    const tenantId = searchParams.get("tenantId");
+
+    let filterExpression = "begins_with(PK, :pk) AND estado = :estado";
+    let expressionAttributeValues: any = {
+      ":pk": "VOUCHER#",
+      ":estado": "PENDIENTE_REVISION"
+    };
+
+    if (tenantId) {
+      filterExpression += " AND usuario_propietario = :tenantId";
+      expressionAttributeValues[":tenantId"] = tenantId;
+    }
+
     const result = await dynamoDb.send(new ScanCommand({
       TableName: "AqtivaChatDB",
-      FilterExpression: "begins_with(PK, :pk) AND estado = :estado",
-      ExpressionAttributeValues: {
-        ":pk": "VOUCHER#",
-        ":estado": "PENDIENTE_REVISION"
-      }
+      FilterExpression: filterExpression,
+      ExpressionAttributeValues: expressionAttributeValues
     }));
 
     return NextResponse.json({ success: true, data: result.Items || [] });

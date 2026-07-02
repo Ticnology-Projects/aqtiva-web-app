@@ -51,17 +51,24 @@ export default function CatalogoView() {
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filtroEstado, setFiltroEstado] = useState<"TODOS" | "COBRADO" | "PENDIENTE" | "EN REVISIÓN">("TODOS");
+
   const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
-  
   const [facturaDetails, setFacturaDetails] = useState<any | null>(null);
+
   const [isFacturaModalOpen, setIsFacturaModalOpen] = useState(false);
 
+  // 🚨 REGLAS MULTI-TENANT Y RBAC
+  const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
+  const userRole = (session?.user as any)?.rol || 'USER';
+
   const fetchFacturas = () => {
+    if (!tenantId) return;
     setIsLoading(true);
-    fetch("/api/facturas")
+    // 🚨 Búsqueda aislada al Tenant
+    fetch(`/api/facturas?tenantId=${encodeURIComponent(tenantId)}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.success) {
@@ -75,41 +82,34 @@ export default function CatalogoView() {
   };
 
   useEffect(() => {
-    if (!session?.user?.email) return;
-    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
-      .then((res) => res.json())
-      .then((data) => { 
-        if (data.success) {
-          setEmpresas(data.data); 
-        }
-      })
-      .catch((err) => console.error(err));
-  }, [session]);
+    if (!tenantId) return;
+    // 🚨 Empresas del Tenant
+    fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setEmpresas(data.data); })
+      .catch(err => console.error(err));
+  }, [tenantId]);
 
   useEffect(() => {
-    fetchFacturas();
-  }, []);
+    if (tenantId) {
+      fetchFacturas();
+    }
+  }, [tenantId]);
 
   const getEmpresaNombre = (ruc: string) => {
-    const emp = empresas.find((e) => e.ruc === ruc);
+    const emp = empresas.find(e => e.ruc === ruc);
     return emp ? emp.nombreOriginal : "Empresa Desconocida";
   };
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === filteredFacturas.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(filteredFacturas.map((f) => f.numero_documento)));
-    }
+    if (selectedIds.size === filteredFacturas.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(filteredFacturas.map(f => f.numero_documento)));
   };
 
   const toggleSelectOne = (id: string) => {
     const newSet = new Set(selectedIds);
-    if (newSet.has(id)) {
-      newSet.delete(id);
-    } else {
-      newSet.add(id);
-    }
+    if (newSet.has(id)) newSet.delete(id);
+    else newSet.add(id);
     setSelectedIds(newSet);
   };
 
@@ -119,7 +119,7 @@ export default function CatalogoView() {
 
     setIsDeleting(true);
     try {
-      const payload = facturasAEliminar.map((f) => ({
+      const payload = facturasAEliminar.map(f => ({
         PK: f.PK,
         numero_documento: f.numero_documento
       }));
@@ -132,7 +132,7 @@ export default function CatalogoView() {
 
       const data = await res.json();
       if (data.success) {
-        setFacturas((prev) => prev.filter((f) => !payload.some((p) => p.numero_documento === f.numero_documento)));
+        setFacturas(prev => prev.filter(f => !payload.some(p => p.numero_documento === f.numero_documento)));
         setSelectedIds(new Set());
       } else {
         alert(data.error);
@@ -146,7 +146,7 @@ export default function CatalogoView() {
 
   const handleExportar = () => {
     const cabeceras = ["Documento", "RUC Cliente", "Cliente", "Monto", "Moneda", "Fecha Emisión", "Vencimiento", "Estado", "Método Resolucion"];
-    const filas = filteredFacturas.map((f) => [
+    const filas = filteredFacturas.map(f => [
       f.numero_documento,
       f.ruc_cliente,
       f.cliente,
@@ -158,7 +158,7 @@ export default function CatalogoView() {
       f.metodo_resolucion || "N/A"
     ]);
 
-    const contenidoCSV = [cabeceras.join(";"), ...filas.map((fila) => fila.join(";"))].join("\n");
+    const contenidoCSV = [cabeceras.join(";"), ...filas.map(fila => fila.join(";"))].join("\n");
     const blob = new Blob([contenidoCSV], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -169,12 +169,9 @@ export default function CatalogoView() {
     document.body.removeChild(link);
   };
 
-  const userRucs = new Set(empresas.map((e) => e.ruc));
-  const facturasDelUsuario = facturas.filter((f) => userRucs.has(f.empresa_emisora_ruc));
-  const facturasPorEmpresa = facturasDelUsuario.filter((f) => {
-    if (!empresaFiltro) return true;
-    return f.empresa_emisora_ruc === empresaFiltro;
-  });
+  const userRucs = new Set(empresas.map(e => e.ruc));
+  const facturasDelUsuario = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
+  const facturasPorEmpresa = facturasDelUsuario.filter(f => !empresaFiltro || f.empresa_emisora_ruc === empresaFiltro);
 
   const filteredFacturas = facturasPorEmpresa.filter((f) => {
     if (filtroOrigen === "AUTO_IA" && f.metodo_resolucion !== "AUTOMATICO_IA") return false;
@@ -182,37 +179,19 @@ export default function CatalogoView() {
     
     const term = searchTerm.toLowerCase();
     const matchSearch = !term ||
-      (f.numero_documento && f.numero_documento.toLowerCase().includes(term)) ||
-      (f.cliente && f.cliente.toLowerCase().includes(term)) ||
-      (f.ruc_cliente && f.ruc_cliente.toLowerCase().includes(term));
+      f.numero_documento?.toLowerCase().includes(term) ||
+      f.cliente?.toLowerCase().includes(term) ||
+      f.ruc_cliente?.toLowerCase().includes(term);
 
     const matchEstado = filtroEstado === "TODOS" || f.estado === filtroEstado;
     return matchSearch && matchEstado;
   });
 
-  const cobradoPEN = filteredFacturas
-    .filter((f) => f.estado === 'COBRADO' && (f.moneda === 'SOLES' || f.moneda === 'PEN' || !f.moneda))
-    .reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
-    
-  const cobradoUSD = filteredFacturas
-    .filter((f) => f.estado === 'COBRADO' && f.moneda === 'USD')
-    .reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  const cobradoPEN = filteredFacturas.filter(f => f.estado === 'COBRADO' && (f.moneda === 'SOLES' || !f.moneda)).reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  const cobradoUSD = filteredFacturas.filter(f => f.estado === 'COBRADO' && f.moneda === 'USD').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
   
-  const pendientePEN = filteredFacturas
-    .filter((f) => f.estado !== 'COBRADO' && (f.moneda === 'SOLES' || f.moneda === 'PEN' || !f.moneda))
-    .reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
-    
-  const pendienteUSD = filteredFacturas
-    .filter((f) => f.estado !== 'COBRADO' && f.moneda === 'USD')
-    .reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
-
-  const handleOpenNuevaFactura = () => {
-    if (!empresaFiltro) {
-      alert("Selecciona un emisor (empresa) en el filtro de abajo para asociar las facturas.");
-    } else {
-      setIsFacturaModalOpen(true);
-    }
-  };
+  const pendientePEN = filteredFacturas.filter(f => f.estado !== 'COBRADO' && (f.moneda === 'SOLES' || !f.moneda)).reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
+  const pendienteUSD = filteredFacturas.filter(f => f.estado !== 'COBRADO' && f.moneda === 'USD').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
 
   return (
     <div className="animate-fadeIn">
@@ -226,24 +205,19 @@ export default function CatalogoView() {
             <div className="bg-green-50 px-4 py-2 rounded-lg border border-green-200">
               <p className="text-[10px] uppercase font-bold text-green-700 tracking-wider">Cobrado Total</p>
               <p className="text-lg font-black text-green-700">S/ {cobradoPEN.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-              {cobradoUSD > 0 ? (
-                <p className="text-sm font-bold text-green-600 border-t border-green-200/50 mt-1 pt-1">
-                  $ {cobradoUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </p>
-              ) : null}
+              {cobradoUSD > 0 && <p className="text-sm font-bold text-green-600 border-t border-green-200/50 mt-1 pt-1">$ {cobradoUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>}
             </div>
             <div className="bg-amber-50 px-4 py-2 rounded-lg border border-amber-200">
               <p className="text-[10px] uppercase font-bold text-amber-700 tracking-wider">Por Cobrar</p>
               <p className="text-lg font-black text-amber-700">S/ {pendientePEN.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-              {pendienteUSD > 0 ? (
-                <p className="text-sm font-bold text-amber-600 border-t border-amber-200/50 mt-1 pt-1">
-                  $ {pendienteUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </p>
-              ) : null}
+              {pendienteUSD > 0 && <p className="text-sm font-bold text-amber-600 border-t border-amber-200/50 mt-1 pt-1">$ {pendienteUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>}
             </div>
           </div>
           <button 
-            onClick={handleOpenNuevaFactura} 
+            onClick={() => { 
+              if(!empresaFiltro) alert("Selecciona un emisor (empresa) en el filtro de abajo para asociar las facturas."); 
+              else setIsFacturaModalOpen(true); 
+            }} 
             className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm whitespace-nowrap h-[fit-content] pb-3 pt-3"
           >
             + Nueva Factura
@@ -252,6 +226,7 @@ export default function CatalogoView() {
       </div>
 
       <div className="mb-6 flex flex-col xl:flex-row gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-start xl:items-center">
+
         <div className="flex flex-col sm:flex-row gap-3 w-full xl:flex-1">
           <div className="relative flex-1 w-full">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -271,13 +246,14 @@ export default function CatalogoView() {
             className="border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[220px] bg-white font-medium text-gray-700"
           >
             <option value="">Todas las empresas</option>
-            {empresas.map((emp) => (
+            {empresas.map(emp => (
               <option key={emp.ruc} value={emp.ruc}>{emp.nombreOriginal}</option>
             ))}
           </select>
         </div>
 
         <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto justify-end items-center flex-wrap">
+
           <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
             <button onClick={() => setFiltroOrigen("TODOS")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex-1 sm:flex-none ${filtroOrigen === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
             <button onClick={() => setFiltroOrigen("AUTO_IA")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "AUTO_IA" ? "bg-indigo-100 text-indigo-700 shadow-sm" : "text-gray-500 hover:text-indigo-600"}`}>🤖 Auto IA</button>
@@ -295,15 +271,13 @@ export default function CatalogoView() {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
               Exportar CSV
             </button>
-            {selectedIds.size > 0 ? (
-              <button 
-                onClick={() => handleDelete(filteredFacturas.filter((f) => selectedIds.has(f.numero_documento)))} 
-                disabled={isDeleting} 
-                className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-              >
+            
+            {/* 🚨 REGLA RBAC: Botón de Borrado Masivo Exclusivo para ADMIN */}
+            {userRole === 'ADMIN' && selectedIds.size > 0 && (
+              <button onClick={() => handleDelete(filteredFacturas.filter(f => selectedIds.has(f.numero_documento)))} disabled={isDeleting} className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-50">
                 {isDeleting ? "Borrando..." : `Borrar (${selectedIds.size})`}
               </button>
-            ) : null}
+            )}
           </div>
         </div>
       </div>
@@ -319,9 +293,12 @@ export default function CatalogoView() {
           <table className="min-w-full text-sm text-left">
             <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
               <tr>
-                <th className="px-4 py-4 w-12 text-center">
-                  <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === filteredFacturas.length} onChange={toggleSelectAll} />
-                </th>
+                {/* 🚨 REGLA RBAC: Checkboxes Exclusivos para ADMIN */}
+                {userRole === 'ADMIN' && (
+                  <th className="px-4 py-4 w-12 text-center">
+                    <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === filteredFacturas.length} onChange={toggleSelectAll} />
+                  </th>
+                )}
                 <th className="px-6 py-4 font-semibold uppercase tracking-wider text-xs">Documento</th>
                 <th className="px-6 py-4 font-semibold uppercase tracking-wider text-xs">Empresa (Cobrador)</th>
                 <th className="px-6 py-4 font-semibold uppercase tracking-wider text-xs">Cliente a Cobrar</th>
@@ -334,24 +311,27 @@ export default function CatalogoView() {
             <tbody className="divide-y divide-gray-200">
               {filteredFacturas.map((factura) => (
                 <tr key={factura.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(factura.numero_documento) ? 'bg-indigo-50/30' : ''}`}>
-                  <td className="px-4 py-4 text-center">
-                    <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(factura.numero_documento)} onChange={() => toggleSelectOne(factura.numero_documento)} />
-                  </td>
+                  
+                  {/* 🚨 REGLA RBAC: Checkboxes de Fila */}
+                  {userRole === 'ADMIN' && (
+                    <td className="px-4 py-4 text-center">
+                      <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(factura.numero_documento)} onChange={() => toggleSelectOne(factura.numero_documento)} />
+                    </td>
+                  )}
+                  
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-indigo-700">{factura.numero_documento}</span>
-                      {factura.metodo_resolucion === "AUTOMATICO_IA" ? (
+                      {factura.metodo_resolucion === "AUTOMATICO_IA" && (
                         <span className="bg-indigo-50 text-indigo-600 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider border border-indigo-100" title="Conciliada Automáticamente">
                           🤖 IA
                         </span>
-                      ) : null}
+                      )}
                     </div>
                     <p className="text-xs text-gray-500 font-mono mt-1">Vence: {displayDate(factura.fecha_vencimiento)}</p>
                   </td>
                   <td className="px-6 py-4">
-                    <p className="font-bold text-gray-800 text-xs truncate max-w-[150px] uppercase" title={getEmpresaNombre(factura.empresa_emisora_ruc)}>
-                      {getEmpresaNombre(factura.empresa_emisora_ruc)}
-                    </p>
+                    <p className="font-bold text-gray-800 text-xs truncate max-w-[150px] uppercase" title={getEmpresaNombre(factura.empresa_emisora_ruc)}>{getEmpresaNombre(factura.empresa_emisora_ruc)}</p>
                     <p className="text-xs text-gray-500 font-mono mt-0.5">RUC: {factura.empresa_emisora_ruc}</p>
                   </td>
                   <td className="px-6 py-4">
@@ -374,10 +354,15 @@ export default function CatalogoView() {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => handleDelete([factura])} className="text-red-600 hover:text-red-900 font-semibold text-xs border border-red-200 hover:border-red-400 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-colors">
-                        Borrar
-                      </button>
-                      <button onClick={() => setFacturaDetails(factura)} className="text-indigo-600 hover:text-indigo-900 font-semibold text-xs border border-indigo-200 hover:border-indigo-400 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded transition-colors">
+                      
+                      {/* 🚨 REGLA RBAC: Botón Eliminar Individual */}
+                      {userRole === 'ADMIN' && factura.estado === "PENDIENTE" && (
+                        <button onClick={() => handleDelete([factura])} className="text-red-500 hover:text-red-700 font-bold text-xs">
+                          Eliminar
+                        </button>
+                      )}
+
+                      <button onClick={() => setFacturaDetails(factura)} className="text-indigo-600 hover:text-indigo-900 font-bold text-xs bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded transition-colors">
                         Ver
                       </button>
                     </div>
@@ -389,23 +374,22 @@ export default function CatalogoView() {
         )}
       </div>
 
-      {facturaDetails ? (
+      {facturaDetails && (
         <FacturaDetailsModal 
           facturaDetails={facturaDetails} 
           onClose={() => setFacturaDetails(null)} 
           onRefresh={fetchFacturas} 
         />
-      ) : null}
+      )}
 
-      {/* 🚨 MODAL DE FACTURAS MANUALES */}
-      {isFacturaModalOpen ? (
+      {isFacturaModalOpen && (
         <FacturaManualModal 
           rucEmisor={empresaFiltro}
-          empresaNombre={getEmpresaNombre(empresaFiltro)} // 🚨 Se agregó esto
+          empresaNombre={getEmpresaNombre(empresaFiltro)}
           onClose={() => setIsFacturaModalOpen(false)} 
           onSuccess={fetchFacturas} 
         />
-      ) : null}
+      )}
     </div>
   );
 }

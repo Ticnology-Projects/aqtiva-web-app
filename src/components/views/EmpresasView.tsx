@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSession } from "next-auth/react";
-import { Plus, Edit2, Trash2, Search, Book } from "lucide-react"; // Se agregó 'Book'
-import EmpresaModal from "../modals/EmpresaModal";
-import DiccionarioModal from "../modals/DiccionarioModal"; // 🚨 Importamos el nuevo modal
+import { Plus, Edit2, Trash2, Search, Book, Upload } from "lucide-react";
+import EmpresaModal from "@/components/modals/EmpresaModal";
+import DiccionarioModal from "@/components/modals/DiccionarioModal"; 
 
 export default function EmpresasView() {
   const { data: session } = useSession();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [empresas, setEmpresas] = useState<any[]>([]);
   const [filteredEmpresas, setFilteredEmpresas] = useState<any[]>([]);
@@ -16,7 +17,6 @@ export default function EmpresasView() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedEmpresa, setSelectedEmpresa] = useState<any | null>(null);
 
-  // 🚨 Nuevos estados para el Diccionario
   const [isDictModalOpen, setIsDictModalOpen] = useState(false);
   const [selectedDictEmpresa, setSelectedDictEmpresa] = useState<any | null>(null);
 
@@ -53,10 +53,58 @@ export default function EmpresasView() {
     setIsModalOpen(true);
   };
 
-  // 🚨 Función para abrir el modal del diccionario
   const handleOpenDict = (empresa: any) => {
     setSelectedDictEmpresa(empresa);
     setIsDictModalOpen(true);
+  };
+
+  // 🚨 CARGA MASIVA DE EMPRESAS DESDE CSV
+  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session?.user?.email) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const text = event.target?.result as string;
+      // Dividimos por saltos de línea y filtramos líneas vacías
+      const rows = text.split('\n').map(r => r.trim()).filter(r => r);
+      
+      // Asumimos Cabecera: RUC, Razón Social, Alias (opcional)
+      const payloadEmpresas = rows.slice(1).map(row => {
+        const columns = row.split(',');
+        const ruc = columns[0]?.trim() || "";
+        const nombreOriginal = columns[1]?.trim() || "";
+        const alias = columns[2]?.trim() || "";
+        return { ruc, nombreOriginal, alias };
+      }).filter(emp => emp.ruc && emp.nombreOriginal);
+
+      if (payloadEmpresas.length === 0) {
+        alert("El archivo no tiene el formato correcto o está vacío. Columnas esperadas: RUC, Razón Social, Alias");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/empresas", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            usuarioId: session?.user?.email, 
+            empresas: payloadEmpresas 
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert(data.message);
+          fetchEmpresas();
+        } else {
+          alert(data.error);
+        }
+      } catch (error) {
+        alert("Error de red al importar las empresas.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ""; // Resetear input
   };
 
   const handleDelete = async (ruc: string) => {
@@ -83,13 +131,23 @@ export default function EmpresasView() {
             Gestiona los RUCs emisores vinculados a tu cuenta.
           </p>
         </div>
-        <button 
-          onClick={() => { setSelectedEmpresa(null); setIsModalOpen(true); }}
-          className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-indigo-700 transition-all shadow-sm"
-        >
-          <Plus className="w-5 h-5" />
-          Nueva Empresa
-        </button>
+        <div className="flex gap-2 w-full sm:w-auto">
+          {/* Input oculto para CSV */}
+          <input type="file" accept=".csv" ref={fileInputRef} onChange={handleImportCSV} className="hidden" />
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-xl font-medium hover:bg-gray-50 transition-all shadow-sm"
+          >
+            <Upload className="w-5 h-5" /> Importar CSV
+          </button>
+          <button 
+            onClick={() => { setSelectedEmpresa(null); setIsModalOpen(true); }}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-indigo-700 transition-all shadow-sm"
+          >
+            <Plus className="w-5 h-5" />
+            Nueva(s) Empresa(s)
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -131,7 +189,6 @@ export default function EmpresasView() {
                     <td className="px-6 py-4 text-gray-500">{emp.alias || "---"}</td>
                     <td className="px-6 py-4">
                       <div className="flex justify-end gap-2">
-                        {/* 🚨 Botón para configurar el Diccionario S3 */}
                         <button 
                           onClick={() => handleOpenDict(emp)}
                           title="Gestionar Diccionario IA"
@@ -169,7 +226,6 @@ export default function EmpresasView() {
         />
       )}
 
-      {/* 🚨 Modal del Diccionario */}
       {isDictModalOpen && selectedDictEmpresa && (
         <DiccionarioModal 
           empresa={selectedDictEmpresa}

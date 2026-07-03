@@ -116,6 +116,10 @@ export default function AuditoriaView() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
 
+  // 🚨 REGLAS MULTI-TENANT Y RBAC
+  const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
+  const userRole = (session?.user as any)?.rol || 'USER';
+
   const fetchAuditoria = () => {
     setIsLoadingAuditoria(true);
     Promise.all([
@@ -131,9 +135,10 @@ export default function AuditoriaView() {
   };
 
   useEffect(() => {
-    if (!session?.user?.email) return;
+    if (!tenantId) return;
 
-    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+    // 🚨 Buscamos las empresas basándonos en el Tenant (ADMIN)
+    fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(dataEmp => {
         if (dataEmp.success) {
@@ -142,9 +147,15 @@ export default function AuditoriaView() {
         }
       })
       .catch(err => console.error("Error cargando empresas:", err));
-  }, [session]);
+  }, [tenantId]);
 
   const handleReversar = async (audit: any) => {
+    // 🚨 Doble protección (Frontend Lock)
+    if (userRole !== 'ADMIN') {
+      alert("Acceso denegado: Solo el Administrador puede reversar conciliaciones.");
+      return;
+    }
+
     const msg = audit.tipo_accion === "ADJUNTO_MANUAL"
       ? `¿Reversar el adjunto de la factura ${audit.numero_documento}?\n\nLa factura seguirá "COBRADA", solo se le eliminará el comprobante visual.`
       : `¿Reversar la conciliación de la factura ${audit.numero_documento}?\n\nLa factura volverá a estar "PENDIENTE" y el voucher regresará a tu bandeja de Triaje.`;
@@ -178,6 +189,12 @@ export default function AuditoriaView() {
   };
 
   const handleEliminarAuditoria = async (audit: any) => {
+    // 🚨 Doble protección (Frontend Lock)
+    if (userRole !== 'ADMIN') {
+      alert("Acceso denegado: Solo el Administrador puede eliminar registros del historial.");
+      return;
+    }
+
     if (!window.confirm(`ADVERTENCIA: ¿Deseas eliminar permanentemente el ticket de auditoría de ${audit.numero_documento} del sistema? Esta acción no se puede deshacer.`)) return;
 
     try {
@@ -226,7 +243,6 @@ export default function AuditoriaView() {
     document.body.removeChild(link);
   };
 
-  // 🚨 FUNCIÓN MEJORADA: Decide dinámicamente si mostrar la imagen
   const handleVerDetalle = (audit: any) => {
     if (!audit.voucher_vinculado) {
       alert("Esta conciliación fue estrictamente manual sin voucher asociado.");
@@ -244,7 +260,6 @@ export default function AuditoriaView() {
         _showImage: esFacturaReal
       });
     } else {
-      // Si fue manual (sin IA) pero sí hay una factura vinculada, mostramos la imagen
       if (esFacturaReal) {
         setAuditParaVerIA({
           nivel_confianza: null,
@@ -379,14 +394,23 @@ export default function AuditoriaView() {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-2">
-                          {audit.estado === "AUDITADO" && audit.tipo_accion !== "REVERSION" && (
-                            <button onClick={() => handleReversar(audit)} className="text-red-600 hover:text-red-900 font-semibold text-xs border border-red-200 hover:border-red-400 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-colors">
-                              Reversar
-                            </button>
+                          {/* 🚨 REGLA RBAC: Botones de Reversar y Eliminar Exclusivos para el ADMIN */}
+                          {userRole === 'ADMIN' ? (
+                            <>
+                              {audit.estado === "AUDITADO" && audit.tipo_accion !== "REVERSION" && (
+                                <button onClick={() => handleReversar(audit)} className="text-red-600 hover:text-red-900 font-semibold text-xs border border-red-200 hover:border-red-400 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-colors">
+                                  Reversar
+                                </button>
+                              )}
+                              <button onClick={() => handleEliminarAuditoria(audit)} className="text-gray-500 hover:text-gray-800 font-semibold text-xs border border-gray-200 hover:border-gray-400 bg-white hover:bg-gray-100 px-3 py-1.5 rounded transition-colors" title="Borrar registro permanentemente">
+                                Borrar
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-gray-400 text-xs italic bg-gray-50 px-2 py-1.5 rounded border border-gray-100">
+                              Solo Lectura
+                            </span>
                           )}
-                          <button onClick={() => handleEliminarAuditoria(audit)} className="text-gray-500 hover:text-gray-800 font-semibold text-xs border border-gray-200 hover:border-gray-400 bg-white hover:bg-gray-100 px-3 py-1.5 rounded transition-colors" title="Borrar registro permanentemente">
-                            Borrar
-                          </button>
                         </div>
                       </td>
                     </tr>

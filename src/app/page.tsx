@@ -14,8 +14,11 @@ import BovedaView from "@/components/views/BovedaView";
 import EquipoView from "@/components/views/EquipoView";
 
 export default function ApplicationLayout() {
-  const { status } = useSession();
+  const { data: session, status } = useSession();
   const [activeNav, setActiveNav] = useState<"dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas" | "boveda" | "equipo">("carga-masiva");
+
+  // 🚨 REGLAS RBAC
+  const userRole = (session?.user as any)?.rol || 'USER';
 
   if (status === "loading") return <div className="min-h-screen bg-gray-50"></div>;
 
@@ -24,14 +27,17 @@ export default function ApplicationLayout() {
       <Navbar activeNav={activeNav} setActiveNav={setActiveNav} />
 
       <main className="max-w-7xl mx-auto p-6 md:p-8">
+        {/* Vistas Públicas (Disponibles para ADMIN y USER) */}
         {activeNav === "dashboard" && <DashboardView />}
         {activeNav === "carga-masiva" && <CargaMasivaView onGoToTriaje={() => setActiveNav("resolucion")} />}
         {activeNav === "facturas" && <CatalogoView />}
         {activeNav === "resolucion" && <TriajeView />}
         {activeNav === "auditoria" && <AuditoriaView />}
-        {activeNav === "empresas" && <EmpresasView />}
         {activeNav === "boveda" && <BovedaView />}
-        {activeNav === "equipo" && <EquipoView />}
+        
+        {/* 🚨 Vistas Protegidas (Exclusivas para ADMIN) */}
+        {activeNav === "empresas" && userRole === "ADMIN" && <EmpresasView />}
+        {activeNav === "equipo" && userRole === "ADMIN" && <EquipoView />}
       </main>
     </div>
   );

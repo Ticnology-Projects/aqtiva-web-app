@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { useSession, signOut } from "next-auth/react";
 
 interface NavbarProps {
-  // 🚨 Añadimos "equipo" a los tipos permitidos
   activeNav: "dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas" | "boveda" | "equipo";
   setActiveNav: (nav: "dashboard" | "facturas" | "carga-masiva" | "resolucion" | "auditoria" | "empresas" | "boveda" | "equipo") => void;
 }
@@ -15,6 +14,9 @@ export default function Navbar({ activeNav, setActiveNav }: NavbarProps) {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false); 
   const profileRef = useRef<HTMLDivElement>(null);
+
+  // 🚨 REGLAS RBAC: Extraemos el rol del usuario
+  const userRole = (session?.user as any)?.rol || 'USER';
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -54,8 +56,14 @@ export default function Navbar({ activeNav, setActiveNav }: NavbarProps) {
                 <button onClick={() => handleNavClick("resolucion")} className={navItemClass("resolucion")}>Triaje IA</button>
                 <button onClick={() => handleNavClick("facturas")} className={navItemClass("facturas")}>Catálogo</button>
                 <button onClick={() => handleNavClick("auditoria")} className={navItemClass("auditoria")}>Auditoría</button>
-                <button onClick={() => handleNavClick("empresas")} className={navItemClass("empresas")}>Mis Empresas</button>
-                <button onClick={() => handleNavClick("equipo")} className={navItemClass("equipo")}>Mi Equipo</button>
+                
+                {/* 🚨 RBAC: Solo el ADMIN puede ver estas pestañas */}
+                {userRole === 'ADMIN' && (
+                  <>
+                    <button onClick={() => handleNavClick("empresas")} className={navItemClass("empresas")}>Mis Empresas</button>
+                    <button onClick={() => handleNavClick("equipo")} className={navItemClass("equipo")}>Mi Equipo</button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -82,9 +90,9 @@ export default function Navbar({ activeNav, setActiveNav }: NavbarProps) {
                   <div className="px-4 py-3 border-b border-gray-100">
                     <p className="text-sm font-medium text-gray-900 truncate">{session?.user?.name || 'Usuario'}</p>
                     <p className="text-xs font-medium text-gray-500 truncate">{session?.user?.email}</p>
-                    {/* Placeholder visual para el Rol */}
-                    <span className="inline-block mt-2 bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-indigo-100">
-                      Administrador
+                    {/* 🚨 RBAC: Badge dinámico según el rol */}
+                    <span className={`inline-block mt-2 text-[10px] font-bold px-2 py-0.5 rounded-full border ${userRole === 'ADMIN' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-green-50 text-green-700 border-green-100'}`}>
+                      {userRole === 'ADMIN' ? 'Administrador' : 'Asistente'}
                     </span>
                   </div>
                   <button onClick={() => signOut({ callbackUrl: "/" })} className="block w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors font-medium">
@@ -118,8 +126,14 @@ export default function Navbar({ activeNav, setActiveNav }: NavbarProps) {
           <button onClick={() => handleNavClick("resolucion")} className={navItemClass("resolucion")}>Triaje IA</button>
           <button onClick={() => handleNavClick("facturas")} className={navItemClass("facturas")}>Catálogo de Facturas</button>
           <button onClick={() => handleNavClick("auditoria")} className={navItemClass("auditoria")}>Auditoría</button>
-          <button onClick={() => handleNavClick("empresas")} className={navItemClass("empresas")}>Mis Empresas</button>
-          <button onClick={() => handleNavClick("equipo")} className={navItemClass("equipo")}>Mi Equipo</button>
+          
+          {/* 🚨 RBAC Móvil: Solo ADMIN */}
+          {userRole === 'ADMIN' && (
+            <>
+              <button onClick={() => handleNavClick("empresas")} className={navItemClass("empresas")}>Mis Empresas</button>
+              <button onClick={() => handleNavClick("equipo")} className={navItemClass("equipo")}>Mi Equipo</button>
+            </>
+          )}
         </div>
       </div>
     </nav>

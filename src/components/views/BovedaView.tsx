@@ -1,7 +1,25 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react"; // 🚨 1. Importar la sesión
+import { useSession } from "next-auth/react";
+
+// ==========================================
+// HELPERS PARA MONTO Y MONEDA
+// ==========================================
+const getVoucherMonto = (v: any) => {
+  let monto = Number(v.conciliacion?.importe_pagado);
+  if (!monto || isNaN(monto)) monto = Number(v.conciliacion?.factura_sugerida?.monto_total);
+  if (!monto || isNaN(monto)) monto = Number(v.conciliacion?.facturas_sugeridas?.[0]?.monto_total);
+  return monto || 0;
+};
+
+const getVoucherMoneda = (v: any) => {
+  let monedaStr = v.conciliacion?.moneda || v.conciliacion?.factura_sugerida?.moneda || "PEN";
+  const m = monedaStr.toUpperCase();
+  if (m === "USD" || m.includes("DOLAR") || m.includes("DÓLAR")) return "$";
+  if (m === "EUR" || m.includes("EURO")) return "€";
+  return "S/";
+};
 
 // ==========================================
 // 1. REPORTE LEGIBLE DE IA PARA HUMANOS
@@ -49,7 +67,7 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
           </span>
         </div>
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center">
-          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Score Base de Datos</span>
+          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Score BD</span>
           <span className="text-2xl font-black text-indigo-600 font-mono">
             {Number(score || 0).toFixed(4)}
           </span>
@@ -66,7 +84,7 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
 
       {sugerida && sugerida.numero_documento && (
         <div>
-          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">Factura Sugerida para Match</h4>
+          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">Factura Sugerida</h4>
           <div className="bg-white border-2 border-indigo-200 rounded-xl p-5 flex justify-between items-center shadow-sm">
             <div>
               <p className="text-xs text-gray-400 font-bold uppercase mb-1">Documento</p>
@@ -85,7 +103,7 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
         <div>
           <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-1">
             <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-            Campos Coincidentes
+            Coincidentes
           </h4>
           <div className="flex flex-wrap gap-2">
             {coincidentes.length > 0 ? coincidentes.map((c: string, i: number) => (
@@ -97,7 +115,7 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
         <div>
           <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-1">
             <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            Campos Discrepantes
+            Discrepantes
           </h4>
           <div className="flex flex-wrap gap-2">
             {discrepantes.length > 0 ? discrepantes.map((c: string, i: number) => (
@@ -111,9 +129,54 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
 };
 
 // ==========================================
-// 2. COMPONENTE: TARJETA DE VOUCHER
+// 2. COMPONENTE: VISOR VOUCHER DE S3
 // ==========================================
-const VoucherCard = ({ voucher, onVerDatos, onAbrirOriginal, isSelected, onToggleSelect }: any) => {
+const VisorVoucher = ({ s3_key, isPdf }: { s3_key: string, isPdf: boolean }) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!s3_key) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    fetch("/api/vouchers/image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ s3_key_json: s3_key })
+    })
+      .then(res => res.json())
+      .then(data => { if (data.success) setUrl(data.url); })
+      .catch(err => console.error(err))
+      .finally(() => setLoading(false));
+  }, [s3_key]);
+
+  if (loading) return <div className="h-full w-full flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
+  if (!url) return <div className="h-full w-full flex items-center justify-center text-sm text-gray-400 font-medium">No se pudo cargar el archivo</div>;
+  
+  if (isPdf) {
+     return (
+       <div className="flex flex-col items-center justify-center h-full w-full bg-gray-50 p-6 text-center">
+         <svg className="w-16 h-16 text-red-500 mb-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-6h2v6zm4-2h-2v-4h2v4zm2-4h-2v-2h2v2z" opacity="0.3"/><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9.5 11.5c0 .83-.67 1.5-1.5 1.5H7v2H5.5V9H8c.83 0 1.5.67 1.5 1.5v1zm5 2c0 .83-.67 1.5-1.5 1.5h-2.5V9H13c.83 0 1.5.67 1.5 1.5v3zm4-3.5h-2v1h1.5v1.5H16.5v2H15V9h3.5v1.5zM7 10.5h1v1H7v-1zm4.5 2.5h-1v-3h1v3z"/></svg>
+         <p className="text-sm text-gray-600 font-medium mb-4">Documento en formato PDF</p>
+         <a href={url} target="_blank" rel="noopener noreferrer" className="bg-indigo-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm">Abrir PDF en nueva pestaña</a>
+       </div>
+     );
+  }
+
+  return (
+    <div className="h-full w-full p-2 flex justify-center items-center">
+      <img src={url} alt="Voucher original" className="max-h-[60vh] max-w-full object-contain rounded shadow-sm" />
+    </div>
+  );
+};
+
+
+// ==========================================
+// 3. COMPONENTE: TARJETA DE VOUCHER
+// ==========================================
+const VoucherCard = ({ voucher, onVerVoucher, isSelected, onToggleSelect, userRole }: any) => {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isLoadingImage, setIsLoadingImage] = useState(false);
 
@@ -134,13 +197,19 @@ const VoucherCard = ({ voucher, onVerDatos, onAbrirOriginal, isSelected, onToggl
     }
   }, [voucher.s3_key, isPdf]);
 
+  const monto = getVoucherMonto(voucher);
+  const simbolo = getVoucherMoneda(voucher);
+
   return (
     <div className={`bg-white rounded-xl shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all group border-2 ${isSelected ? 'border-indigo-500 ring-4 ring-indigo-50' : 'border-gray-200'}`}>
       <div className="h-48 bg-gray-100 border-b border-gray-200 relative flex items-center justify-center overflow-hidden">
         
-        <div className="absolute top-3 left-3 z-20">
-          <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(voucher.PK)} className="w-5 h-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shadow-sm" />
-        </div>
+        {/* 🚨 RBAC: Solo ADMIN ve los checkboxes */}
+        {userRole === 'ADMIN' && (
+          <div className="absolute top-3 left-3 z-20">
+            <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(voucher.PK)} className="w-5 h-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shadow-sm" />
+          </div>
+        )}
 
         <div className="absolute top-2 right-2 z-10">
           <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold shadow-sm backdrop-blur-md ${voucher.estado === "RESUELTO" ? "bg-green-100/90 text-green-800 border border-green-200" : "bg-amber-100/90 text-amber-800 border border-amber-200"}`}>
@@ -166,34 +235,44 @@ const VoucherCard = ({ voucher, onVerDatos, onAbrirOriginal, isSelected, onToggl
       </div>
 
       <div className="p-4 flex-1 flex flex-col">
-        <h3 className="font-bold text-sm text-gray-900 line-clamp-2 leading-tight mb-1" title={voucher.fileName}>{voucher.fileName}</h3>
+        <h3 className="font-bold text-sm text-gray-900 line-clamp-2 leading-tight mb-3" title={voucher.fileName}>{voucher.fileName}</h3>
+        
+        {/* 🚨 CORRECCIÓN FORMATO DE MONEDA */}
+        <p className="text-xs text-gray-700 font-bold mb-2">Monto: <span className="font-mono text-indigo-600 text-sm ml-1">{simbolo} {monto.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></p>
+
         <p className="text-[11px] text-gray-500 font-mono mt-auto pt-2 border-t border-gray-100">Subido: {voucher.fecha_importacion ? new Date(voucher.fecha_importacion).toLocaleDateString('es-PE') : '---'}</p>
       </div>
 
-      <div className="p-3 bg-gray-50 border-t border-gray-200 flex gap-2">
-        <button onClick={() => onVerDatos({ file: voucher.fileName, data: voucher.conciliacion || voucher.candidatos_kb })} className="flex-1 bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Datos IA</button>
-        <button onClick={() => onAbrirOriginal(voucher.s3_key)} disabled={!voucher.s3_key} className="flex-1 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg> Abrir
+      <div className="p-3 bg-gray-50 border-t border-gray-200">
+        <button onClick={() => onVerVoucher(voucher)} className="w-full bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50 py-2 rounded-lg text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1.5">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+          Ver Detalle
         </button>
       </div>
     </div>
   );
 };
 
+
 // ==========================================
-// 3. VISTA PRINCIPAL (BOVEDA)
+// 4. VISTA PRINCIPAL (BOVEDA)
 // ==========================================
 export default function BovedaView() {
-  const { data: session } = useSession(); // 🚨 2. Obtenemos el usuario activo
+  const { data: session } = useSession();
   
-  const [empresas, setEmpresas] = useState<any[]>([]); // 🚨 3. Declaramos el estado de empresas
+  const [empresas, setEmpresas] = useState<any[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState<"TODOS" | "PENDIENTE_REVISION" | "RESUELTO">("TODOS");
-  const [jsonViewerData, setJsonViewerData] = useState<any | null>(null);
+  
+  const [selectedVoucher, setSelectedVoucher] = useState<any | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // 🚨 REGLAS MULTI-TENANT Y RBAC
+  const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
+  const userRole = (session?.user as any)?.rol || 'USER';
 
   const fetchTodosLosVouchers = () => {
     setIsLoading(true);
@@ -209,29 +288,14 @@ export default function BovedaView() {
   };
 
   useEffect(() => { 
-    if (!session?.user?.email) return;
+    if (!tenantId) return;
 
-    // 🚨 4. Cargamos las empresas de la base de datos para aislar la vista
-    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
+    fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(data => { if (data.success) setEmpresas(data.data); });
 
     fetchTodosLosVouchers(); 
-  }, [session]);
-
-  const handleAbrirOriginal = async (s3_key: string) => {
-    if (!s3_key) return;
-    try {
-      const res = await fetch("/api/vouchers/image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ s3_key_json: s3_key })
-      });
-      const data = await res.json();
-      if (data.success && data.url) window.open(data.url, "_blank");
-      else alert("No se pudo obtener el documento: " + data.error);
-    } catch (e) { alert("Error de red."); }
-  };
+  }, [tenantId]);
 
   const toggleSelectOne = (pk: string) => {
     const newSet = new Set(selectedIds);
@@ -241,6 +305,9 @@ export default function BovedaView() {
   };
 
   const handleEliminarMasivo = async () => {
+    // 🚨 RBAC Lock
+    if (userRole !== 'ADMIN') return;
+
     const vouchersAEliminar = filteredVouchers.filter(v => selectedIds.has(v.PK));
     if (!window.confirm(`ATENCIÓN: Estás a punto de eliminar PERMANENTEMENTE ${vouchersAEliminar.length} documento(s).\n\nSe borrará su input (imagen/pdf), su output (IA) y su registro de procesamiento.\n\n¿Estás completamente seguro?`)) return;
 
@@ -261,11 +328,12 @@ export default function BovedaView() {
     finally { setIsDeleting(false); }
   };
 
-  // 🚨 5. Le decimos a TypeScript que 'e' es de tipo any
   const userRucs = new Set(empresas.map((e: any) => e.ruc));
 
   const filteredVouchers = vouchers.filter((v) => {
+    // Aislamiento Multi-Tenant
     if (!userRucs.has(v.empresa_emisora_ruc)) return false;
+    
     const term = searchTerm.toLowerCase();
     const matchSearch = !term || v.fileName?.toLowerCase().includes(term);
     const matchEstado = estadoFiltro === "TODOS" || v.estado === estadoFiltro;
@@ -290,7 +358,9 @@ export default function BovedaView() {
         </div>
         
         <div className="flex gap-2 flex-wrap items-center">
-          {selectedIds.size > 0 && (
+          
+          {/* 🚨 RBAC: Botón eliminar exclusivo del ADMIN */}
+          {userRole === 'ADMIN' && selectedIds.size > 0 && (
             <button onClick={handleEliminarMasivo} disabled={isDeleting} className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 flex items-center gap-2 transition-colors disabled:opacity-50">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
               {isDeleting ? "Borrando..." : `Borrar S3 (${selectedIds.size})`}
@@ -312,33 +382,68 @@ export default function BovedaView() {
           <p className="text-xl font-medium text-gray-700">La bóveda está vacía</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredVouchers.map(v => (
-            <VoucherCard key={v.PK} voucher={v} isSelected={selectedIds.has(v.PK)} onToggleSelect={toggleSelectOne} onVerDatos={setJsonViewerData} onAbrirOriginal={handleAbrirOriginal} />
+            <VoucherCard 
+              key={v.PK} 
+              voucher={v} 
+              isSelected={selectedIds.has(v.PK)} 
+              onToggleSelect={toggleSelectOne} 
+              onVerVoucher={setSelectedVoucher} 
+              userRole={userRole} 
+            />
           ))}
         </div>
       )}
 
-      {/* MODAL DEL REPORTE IA */}
-      {jsonViewerData && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setJsonViewerData(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100 bg-white shrink-0">
-              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+      {/* 🚨 NUEVO: MODAL MAESTRO "VER" (Reporte IA + S3) */}
+      {selectedVoucher && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setSelectedVoucher(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100 bg-gray-50 shrink-0">
+              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shadow-inner">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
                 </div>
-                Reporte de Análisis IA
+                Detalle del Documento
               </h2>
-              <button onClick={() => setJsonViewerData(null)} className="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+              <button onClick={() => setSelectedVoucher(null)} className="text-gray-400 hover:text-gray-700 text-3xl leading-none transition-colors">&times;</button>
             </div>
             
-            <div className="p-6 overflow-y-auto flex-1 bg-gray-50/50">
-              <ReporteIAHumano data={jsonViewerData.data} />
-            </div>
-            
-            <div className="bg-white border-t border-gray-100 px-6 py-4 flex justify-end shrink-0">
-              <button onClick={() => setJsonViewerData(null)} className="px-6 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-lg transition-colors">Cerrar</button>
+            <div className="p-6 overflow-y-auto flex-1 bg-white custom-scrollbar grid grid-cols-1 md:grid-cols-2 gap-8">
+              
+              {/* PANEL IZQUIERDO: S3 Visual */}
+              <div className="flex flex-col h-full border-b md:border-b-0 md:border-r border-gray-100 pb-6 md:pb-0 md:pr-6">
+                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest block mb-3">Comprobante Físico</h3>
+                {selectedVoucher.fileName && (
+                  <p className="text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 p-2 rounded truncate shadow-sm mb-3">
+                    Origen: {selectedVoucher.fileName}
+                  </p>
+                )}
+                <div className="flex-1 bg-gray-50 rounded-xl border border-gray-200 overflow-hidden relative min-h-[350px]">
+                  <VisorVoucher 
+                    s3_key={selectedVoucher.s3_key} 
+                    isPdf={selectedVoucher.fileName?.toLowerCase().endsWith('.pdf') || selectedVoucher.s3_key?.toLowerCase().endsWith('.pdf')} 
+                  />
+                </div>
+              </div>
+
+              {/* PANEL DERECHO: Diagnóstico de Inteligencia Artificial */}
+              <div className="flex flex-col h-full md:pl-2">
+                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest block mb-4">Diagnóstico Inteligencia Artificial</h3>
+                <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
+                   {selectedVoucher.conciliacion || selectedVoucher.candidatos_kb ? (
+                     <ReporteIAHumano data={selectedVoucher.conciliacion || selectedVoucher.candidatos_kb} />
+                   ) : (
+                     <div className="bg-amber-50 border border-amber-200 text-amber-800 p-8 rounded-xl h-full flex flex-col justify-center items-center text-center min-h-[300px]">
+                       <svg className="w-16 h-16 text-amber-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                       <h3 className="font-bold text-lg mb-2">Sin Reporte de IA</h3>
+                       <p className="text-sm font-medium">Este comprobante no ha sido procesado o no cuenta con datos de Inteligencia Artificial.</p>
+                     </div>
+                   )}
+                </div>
+              </div>
+
             </div>
           </div>
         </div>

@@ -1,9 +1,9 @@
 "use client";
+
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import ResolucionModal from "../modals/ResolucionModal";
 
-// 🚨 HELPER: Extrae la sugerencia sin importar si es 1 factura o un Lote
 const getSugerenciaInfo = (conciliacion: any) => {
   if (!conciliacion) return { cliente: 'No detectado', doc: '---' };
   
@@ -26,221 +26,221 @@ export default function TriajeView() {
   const { data: session } = useSession();
   
   const [vouchers, setVouchers] = useState<any[]>([]);
-  const [selectedVoucher, setSelectedVoucher] = useState<any | null>(null);
-  const [isResolving, setIsResolving] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-
   const [empresas, setEmpresas] = useState<any[]>([]);
-  const [empresaFiltro, setEmpresaFiltro] = useState("");
-
-  const [searchTerm, setSearchTerm] = useState("");
-  const [nivelFiltro, setNivelFiltro] = useState<"TODOS" | "ALTO" | "AMBIGUO" | "MANUAL">("TODOS");
-
+  const [selectedVoucher, setSelectedVoucher] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
 
-  useEffect(() => {
-    if (!session?.user?.email) return;
-    fetch(`/api/empresas?usuarioId=${encodeURIComponent(session.user.email)}`)
-      .then(res => res.json())
-      .then(data => { if (data.success) setEmpresas(data.data); })
-      .catch(err => console.error(err));
-  }, [session]);
+  // 🚨 REGLAS MULTI-TENANT Y RBAC
+  const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
+  const userRole = (session?.user as any)?.rol || 'USER';
 
-  const fetchVouchers = () => {
+  const fetchData = () => {
+    if (!tenantId) return;
     setIsLoading(true);
-    fetch("/api/vouchers")
-      .then(res => res.json())
-      .then(data => { 
-        if (data.success) {
-          setVouchers(data.data); 
-          setSelectedIds(new Set());
+    
+    Promise.all([
+      // 🚨 Ya no le pasamos tenantId a los vouchers, traemos todos los pendientes
+      fetch(`/api/vouchers`).then(res => res.json()),
+      fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`).then(res => res.json())
+    ])
+      .then(([vouchersData, empresasData]) => {
+        let misEmpresas: any[] = [];
+        
+        if (empresasData.success) {
+          misEmpresas = empresasData.data;
+          setEmpresas(misEmpresas);
         }
+
+        if (vouchersData.success) {
+          // 🚨 FILTRO CRUZADO SEGURO: Extraemos los RUCs de las empresas que le pertenecen a este Tenant
+          const userRucs = new Set(misEmpresas.map(e => e.ruc));
+          
+          // Solo conservamos los vouchers que pertenezcan a los RUCs autorizados
+          const misVouchers = vouchersData.data.filter((v: any) => userRucs.has(v.empresa_emisora_ruc));
+
+          // Ordenar por fecha de registro (más recientes primero)
+          const sortedVouchers = misVouchers.sort((a: any, b: any) => {
+            const timeA = a.fecha_registro ? new Date(a.fecha_registro).getTime() : 0;
+            const timeB = b.fecha_registro ? new Date(b.fecha_registro).getTime() : 0;
+            return timeB - timeA;
+          });
+          setVouchers(sortedVouchers);
+        }
+        
+        setSelectedIds(new Set());
       })
+      .catch(err => console.error("Error cargando Triaje:", err))
       .finally(() => setIsLoading(false));
   };
 
-  useEffect(() => { fetchVouchers(); }, []);
-
-  const handleConfirm = async (payloadOpciones: any) => {
-    setIsResolving(true);
-    try {
-      // payloadOpciones puede ser { factura_pk, numero_documento } (Modo 1:1)
-      // O puede ser { facturas: [{PK, numero_documento}] } (Modo Lote)
-      
-      const payloadBase = {
-        s3_key_voucher: selectedVoucher.s3_key, 
-        PK_Voucher: selectedVoucher.PK,
-        ...payloadOpciones // Esparcimos el objeto que vino del Modal
-      };
-
-      const res = await fetch("/api/facturas/resolver", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payloadBase)
-      });
-      const data = await res.json();
-      if (data.success) {
-        setVouchers(prev => prev.filter(v => v.PK !== selectedVoucher.PK));
-        setSelectedVoucher(null);
-      } else alert(data.error);
-    } catch (e) { alert("Error de red"); }
-    setIsResolving(false);
-  };
-
-  const toggleSelectAll = () => {
-    if (selectedIds.size === filteredVouchers.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(filteredVouchers.map(v => v.PK)));
-  };
-
-  const toggleSelectOne = (pk: string) => {
-    const newSet = new Set(selectedIds);
-    if (newSet.has(pk)) newSet.delete(pk);
-    else newSet.add(pk);
-    setSelectedIds(newSet);
-  };
-
-  const handleDelete = async (vouchersToDel: any[]) => {
-    if (!window.confirm(`¿Seguro que deseas eliminar permanentemente ${vouchersToDel.length} archivo(s) de la base de datos y de S3?`)) return;
-
-    setIsDeleting(true);
-    try {
-      const payload = vouchersToDel.map(v => ({ PK: v.PK, s3_key: v.s3_key }));
-      const res = await fetch("/api/vouchers/eliminar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vouchers: payload })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setVouchers(prev => prev.filter(v => !payload.some(p => p.PK === v.PK)));
-        setSelectedIds(new Set());
-      } else alert(data.error);
-    } catch (e) {
-      alert("Error al intentar eliminar los vouchers.");
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const userRucs = new Set(empresas.map(e => e.ruc));
-
-  const vouchersPorEmpresa = vouchers.filter(v => {
-      if (!userRucs.has(v.empresa_emisora_ruc)) return false; 
-      if (empresaFiltro && v.empresa_emisora_ruc !== empresaFiltro) return false;
-      return true;
-  });
-
-  const metricas = {
-    altos: vouchersPorEmpresa.filter(v => v.conciliacion?.nivel_confianza === "ALTO").length,
-    // 🚨 Vinculamos AMBIGUO del frontend con el MEDIO del backend
-    ambiguos: vouchersPorEmpresa.filter(v => ["AMBIGUO", "MEDIO"].includes(v.conciliacion?.nivel_confianza)).length,
-    manual: vouchersPorEmpresa.filter(v => ["BAJO", "SIN_MATCH"].includes(v.conciliacion?.nivel_confianza)).length,
-  };
-
-  const filteredVouchers = vouchersPorEmpresa.filter((v) => {
-    const term = searchTerm.toLowerCase();
-    const infoSug = getSugerenciaInfo(v.conciliacion);
-    const matchSearch = !term || v.fileName?.toLowerCase().includes(term) || infoSug.cliente.toLowerCase().includes(term) || v.conciliacion?.justificacion?.toLowerCase().includes(term);
-    
-    let matchNivel = true;
-    const nivelIA = v.conciliacion?.nivel_confianza || "SIN_MATCH";
-    if (nivelFiltro !== "TODOS") {
-      if (nivelFiltro === "AMBIGUO") matchNivel = ["AMBIGUO", "MEDIO"].includes(nivelIA);
-      else if (nivelFiltro === "MANUAL") matchNivel = ["BAJO", "SIN_MATCH"].includes(nivelIA);
-      else matchNivel = nivelIA === nivelFiltro;
-    }
-    return matchSearch && matchNivel;
-  });
+  useEffect(() => {
+    fetchData();
+  }, [tenantId]);
 
   const getEmpresaNombre = (ruc: string) => {
     const emp = empresas.find(e => e.ruc === ruc);
     return emp ? emp.nombreOriginal : "Empresa Desconocida";
   };
 
+  const toggleSelectAll = () => {
+    if (selectedIds.size === vouchers.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(vouchers.map(v => v.s3_key)));
+  };
+
+  const toggleSelectOne = (id: string) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(id)) newSet.delete(id);
+    else newSet.add(id);
+    setSelectedIds(newSet);
+  };
+
+  const handleDelete = async (vouchersAEliminar: any[]) => {
+    // Protección RBAC (Frontend)
+    if (userRole !== 'ADMIN') {
+      alert("Acceso denegado: Solo el Administrador puede eliminar vouchers.");
+      return;
+    }
+
+    if (!window.confirm(`¿Seguro que deseas descartar ${vouchersAEliminar.length} voucher(s)?\nSe borrarán de la bandeja de Triaje y de S3.`)) return;
+
+    setIsDeleting(true);
+    try {
+      const payload = vouchersAEliminar.map(v => ({ s3_key: v.s3_key }));
+      const res = await fetch("/api/vouchers/eliminar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vouchers: payload })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      } else {
+        alert(data.error);
+      }
+    } catch (err) {
+      alert("Error de red al intentar eliminar.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleResolverVoucher = async (payloadConfirmacion: any) => {
+    setIsResolving(true);
+    try {
+      const res = await fetch("/api/facturas/resolver", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          facturas: payloadConfirmacion.facturas,
+          s3_key_voucher: selectedVoucher.s3_key,
+          PK_Voucher: selectedVoucher.PK,
+          es_automatico: false
+        })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message);
+        setSelectedVoucher(null);
+        fetchData(); 
+      } else {
+        alert(data.error);
+      }
+    } catch (err) {
+      alert("Error al resolver la conciliación.");
+    } finally {
+      setIsResolving(false);
+    }
+  };
+
   return (
     <div className="animate-fadeIn">
-      <div className="mb-6 flex justify-between items-end">
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Triaje de Vouchers</h1>
-          <p className="text-gray-500 mt-1">Mostrando {filteredVouchers.length} de {vouchers.length} documentos procesados.</p>
+          <h1 className="text-2xl font-bold text-gray-900">Triaje de IA</h1>
+          <p className="text-gray-500 mt-1">Supervisa y aprueba las conciliaciones de los vouchers entrantes.</p>
         </div>
-      </div>
-
-      <div className="mb-6 flex flex-col xl:flex-row gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-start xl:items-center">
-        <div className="flex flex-col sm:flex-row gap-3 w-full xl:flex-1">
-          <div className="relative flex-1 w-full">
-            <input type="text" placeholder="Buscar por archivo, razón social o justificación..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="block w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-indigo-500 outline-none" />
-          </div>
-          <select value={empresaFiltro} onChange={(e) => setEmpresaFiltro(e.target.value)} className="border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-indigo-500 outline-none min-w-[220px] bg-white">
-            <option value="">Todas las empresas</option>
-            {empresas.map(emp => <option key={emp.ruc} value={emp.ruc}>{emp.nombreOriginal}</option>)}
-          </select>
-        </div>
-        
-        <div className="flex gap-2 flex-wrap items-center w-full xl:w-auto justify-end">
-          {selectedIds.size > 0 && (
-            <button onClick={() => handleDelete(filteredVouchers.filter(v => selectedIds.has(v.PK)))} disabled={isDeleting} className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 flex items-center gap-2 transition-colors disabled:opacity-50">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-              {isDeleting ? "Borrando..." : `Borrar (${selectedIds.size})`}
+        <div className="flex gap-2">
+          {userRole === 'ADMIN' && selectedIds.size > 0 && (
+            <button onClick={() => handleDelete(vouchers.filter(v => selectedIds.has(v.s3_key)))} disabled={isDeleting} className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 flex items-center justify-center gap-2 transition-colors shadow-sm disabled:opacity-50">
+              {isDeleting ? "Descartando..." : `Descartar (${selectedIds.size})`}
             </button>
           )}
-          <div className="flex bg-gray-100 p-1 rounded-lg overflow-x-auto shrink-0">
-            <button onClick={() => setNivelFiltro("TODOS")} className={`px-4 py-1.5 rounded-md text-sm font-semibold ${nivelFiltro === "TODOS" ? "bg-white shadow-sm" : "text-gray-500"}`}>Todos</button>
-            <button onClick={() => setNivelFiltro("ALTO")} className={`px-4 py-1.5 rounded-md text-sm font-semibold flex items-center gap-2 ${nivelFiltro === "ALTO" ? "bg-green-100 text-green-800" : "text-gray-500"}`}><span className="w-2 h-2 rounded-full bg-green-500"></span>Altos ({metricas.altos})</button>
-            <button onClick={() => setNivelFiltro("AMBIGUO")} className={`px-4 py-1.5 rounded-md text-sm font-semibold flex items-center gap-2 ${nivelFiltro === "AMBIGUO" ? "bg-amber-100 text-amber-800" : "text-gray-500"}`}><span className="w-2 h-2 rounded-full bg-amber-500"></span>Ambig ({metricas.ambiguos})</button>
-            <button onClick={() => setNivelFiltro("MANUAL")} className={`px-4 py-1.5 rounded-md text-sm font-semibold flex items-center gap-2 ${nivelFiltro === "MANUAL" ? "bg-red-100 text-red-800" : "text-gray-500"}`}><span className="w-2 h-2 rounded-full bg-red-500"></span>Sin Match ({metricas.manual})</button>
-          </div>
-          <button onClick={fetchVouchers} className="bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm">Refrescar</button>
+          <button onClick={fetchData} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-50 shadow-sm transition-colors flex items-center gap-2">
+            Actualizar Bandeja
+          </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         {isLoading ? (
           <div className="flex justify-center items-center h-48"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>
-        ) : filteredVouchers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-gray-500">
-            <p className="text-lg font-medium">No hay vouchers que coincidan.</p>
+        ) : vouchers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-gray-500 text-center">
+            <svg className="w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p className="text-xl font-medium text-gray-800">La bandeja está limpia</p>
+            <p className="mt-1">No hay comprobantes pendientes de revisión.</p>
           </div>
         ) : (
           <table className="min-w-full text-sm text-left">
-            <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-500">
               <tr>
-                <th className="px-4 py-4 w-12 text-center"><input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === filteredVouchers.length} onChange={toggleSelectAll} /></th>
-                <th className="p-4 font-semibold">Voucher Analizado</th>
-                <th className="p-4 font-semibold">Empresa (Cobrador)</th>
-                <th className="p-4 font-semibold">Sugerencia (Cliente)</th>
-                <th className="p-4 font-semibold">Justificación IA</th>
-                <th className="p-4 text-center font-semibold">Nivel de Match</th>
-                <th className="p-4 text-right font-semibold">Acciones</th>
+                {userRole === 'ADMIN' && (
+                  <th className="p-4 w-12 text-center">
+                    <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === vouchers.length} onChange={toggleSelectAll} />
+                  </th>
+                )}
+                <th className="p-4 font-semibold uppercase tracking-wider text-xs">Voucher Depositado</th>
+                <th className="p-4 font-semibold uppercase tracking-wider text-xs">Empresa (Cuenta Destino)</th>
+                <th className="p-4 font-semibold uppercase tracking-wider text-xs">Sugerencia IA (Cliente y Doc)</th>
+                <th className="p-4 font-semibold uppercase tracking-wider text-xs text-center">Confianza IA</th>
+                <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Acción</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
-              {filteredVouchers.map(v => {
-                const infoSug = getSugerenciaInfo(v.conciliacion);
+            <tbody className="divide-y divide-gray-100">
+              {vouchers.map(v => {
+                const sugInfo = getSugerenciaInfo(v.conciliacion);
+                
                 return (
-                  <tr key={v.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(v.PK) ? 'bg-indigo-50/30' : ''}`}>
-                    <td className="px-4 py-4 text-center"><input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(v.PK)} onChange={() => toggleSelectOne(v.PK)} /></td>
-                    <td className="p-4"><p className="font-medium text-gray-900 truncate max-w-[150px]">{v.fileName}</p></td>
+                  <tr key={v.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(v.s3_key) ? 'bg-indigo-50/30' : ''}`}>
+                    {userRole === 'ADMIN' && (
+                      <td className="p-4 text-center">
+                        <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(v.s3_key)} onChange={() => toggleSelectOne(v.s3_key)} />
+                      </td>
+                    )}
                     <td className="p-4">
-                      <p className="font-bold text-indigo-700 text-sm truncate max-w-[180px]" title={getEmpresaNombre(v.empresa_emisora_ruc)}>{getEmpresaNombre(v.empresa_emisora_ruc)}</p>
-                      <p className="text-xs text-gray-500 font-mono mt-0.5">RUC: {v.empresa_emisora_ruc || 'N/A'}</p>
+                      <p className="font-bold text-gray-800 text-xs truncate max-w-[180px]" title={v.fileName}>{v.fileName}</p>
+                      <p className="text-[10px] text-gray-500 font-mono mt-0.5">Monto: {v.conciliacion?.moneda === 'USD' ? '$' : 'S/'} {Number(v.conciliacion?.importe_pagado || 0).toFixed(2)}</p>
                     </td>
                     <td className="p-4">
-                      {/* 🚨 AQUÍ SE IMPRIME LA SUGERENCIA CORREGIDA */}
-                      <p className="text-gray-900 font-medium">{infoSug.cliente}</p>
-                      <p className="text-xs text-gray-500 font-mono mt-1">Sugerido: {infoSug.doc}</p>
+                      <p className="font-bold text-gray-800 text-xs truncate max-w-[150px] uppercase" title={getEmpresaNombre(v.empresa_emisora_ruc)}>{getEmpresaNombre(v.empresa_emisora_ruc)}</p>
+                      <p className="text-[10px] text-gray-500 font-mono mt-0.5">RUC: {v.empresa_emisora_ruc}</p>
                     </td>
-                    <td className="p-4"><p className="text-xs text-gray-600 line-clamp-2 max-w-xs">{v.conciliacion?.justificacion}</p></td>
+                    <td className="p-4">
+                      <div className="bg-gray-50 border border-gray-100 p-2 rounded-lg">
+                        <p className="font-bold text-indigo-700 text-xs truncate max-w-[180px]" title={sugInfo.cliente}>{sugInfo.cliente}</p>
+                        <p className="text-[10px] text-gray-500 font-mono mt-0.5">Documento: {sugInfo.doc}</p>
+                      </div>
+                    </td>
                     <td className="p-4 text-center">
-                      <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${v.conciliacion?.nivel_confianza === "ALTO" ? "bg-green-100 text-green-800" : ["AMBIGUO", "MEDIO"].includes(v.conciliacion?.nivel_confianza) ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>
-                        {v.conciliacion?.nivel_confianza === "MEDIO" ? "AMBIGUO" : v.conciliacion?.nivel_confianza}
+                      <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold tracking-widest ${v.conciliacion?.nivel_confianza === "ALTO" ? "bg-green-100 text-green-800" : ["AMBIGUO", "MEDIO"].includes(v.conciliacion?.nivel_confianza) ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>
+                        {v.conciliacion?.nivel_confianza === "MEDIO" ? "AMBIGUO" : (v.conciliacion?.nivel_confianza || "NO MATCH")}
                       </span>
                     </td>
                     <td className="p-4 text-right">
                       <div className="flex justify-end gap-2">
-                        <button onClick={() => handleDelete([v])} className="bg-white border border-red-200 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Borrar</button>
-                        <button onClick={() => setSelectedVoucher(v)} className="bg-indigo-600 border border-transparent text-white hover:bg-indigo-700 px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">Resolver</button>
+                        {userRole === 'ADMIN' && (
+                          <button onClick={() => handleDelete([v])} className="bg-white border border-red-200 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">
+                            Borrar
+                          </button>
+                        )}
+                        <button onClick={() => setSelectedVoucher(v)} className="bg-indigo-600 border border-transparent text-white hover:bg-indigo-700 px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors">
+                          Resolver
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -250,8 +250,16 @@ export default function TriajeView() {
           </table>
         )}
       </div>
-      
-      <ResolucionModal voucher={selectedVoucher} onClose={() => setSelectedVoucher(null)} onConfirm={handleConfirm} isResolving={isResolving} empresas={empresas} />
+
+      {selectedVoucher && (
+        <ResolucionModal
+          voucher={selectedVoucher}
+          empresas={empresas}
+          onClose={() => setSelectedVoucher(null)}
+          onConfirm={handleResolverVoucher}
+          isResolving={isResolving}
+        />
+      )}
     </div>
   );
 }

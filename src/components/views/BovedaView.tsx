@@ -1,11 +1,21 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react";
+import { useSession } from "next-auth/react"; 
 
 // ==========================================
 // HELPERS PARA MONTO Y MONEDA
 // ==========================================
+
+// 🚨 NUEVO HELPER: Transforma textos como "PEN", "SOLES", "USD" a su símbolo
+const formatCurrencySymbol = (monedaStr: string) => {
+  if (!monedaStr) return "S/";
+  const m = String(monedaStr).toUpperCase();
+  if (m === "USD" || m.includes("DOLAR") || m.includes("DÓLAR")) return "$";
+  if (m === "EUR" || m.includes("EURO")) return "€";
+  return "S/";
+};
+
 const getVoucherMonto = (v: any) => {
   let monto = Number(v.conciliacion?.importe_pagado);
   if (!monto || isNaN(monto)) monto = Number(v.conciliacion?.factura_sugerida?.monto_total);
@@ -15,10 +25,7 @@ const getVoucherMonto = (v: any) => {
 
 const getVoucherMoneda = (v: any) => {
   let monedaStr = v.conciliacion?.moneda || v.conciliacion?.factura_sugerida?.moneda || "PEN";
-  const m = monedaStr.toUpperCase();
-  if (m === "USD" || m.includes("DOLAR") || m.includes("DÓLAR")) return "$";
-  if (m === "EUR" || m.includes("EURO")) return "€";
-  return "S/";
+  return formatCurrencySymbol(monedaStr);
 };
 
 // ==========================================
@@ -48,10 +55,14 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
   const nivel = getVal(d.nivel_confianza);
   const score = getVal(d.score_kb);
   const justificacion = getVal(d.justificacion);
+  
+  // 🚨 Aseguramos extraer moneda y monto neto si vienen parseados desde Dynamo (M)
   const sugerida = d.factura_sugerida?.M ? {
     numero_documento: getVal(d.factura_sugerida.M.numero_documento),
     cliente: getVal(d.factura_sugerida.M.cliente),
-    monto_total: getVal(d.factura_sugerida.M.monto_total)
+    monto_total: getVal(d.factura_sugerida.M.monto_total),
+    moneda: getVal(d.factura_sugerida.M.moneda),
+    monto_neto_aplicado: getVal(d.factura_sugerida.M.monto_neto_aplicado)
   } : d.factura_sugerida;
 
   const coincidentes = getArray(d.campos_coincidentes);
@@ -93,7 +104,10 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
             </div>
             <div className="text-right">
               <p className="text-xs text-gray-400 font-bold uppercase mb-1">Monto</p>
-              <p className="text-2xl font-black text-indigo-700 font-mono">S/ {sugerida.monto_total}</p>
+              {/* 🚨 PARCHE APLICADO: Formato de Símbolo y forzado de 2 decimales (.00) */}
+              <p className="text-2xl font-black text-indigo-700 font-mono">
+                {formatCurrencySymbol(sugerida.moneda)} {Number(sugerida.monto_neto_aplicado || sugerida.monto_total || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
             </div>
           </div>
         </div>
@@ -237,7 +251,6 @@ const VoucherCard = ({ voucher, onVerVoucher, isSelected, onToggleSelect, userRo
       <div className="p-4 flex-1 flex flex-col">
         <h3 className="font-bold text-sm text-gray-900 line-clamp-2 leading-tight mb-3" title={voucher.fileName}>{voucher.fileName}</h3>
         
-        {/* 🚨 CORRECCIÓN FORMATO DE MONEDA */}
         <p className="text-xs text-gray-700 font-bold mb-2">Monto: <span className="font-mono text-indigo-600 text-sm ml-1">{simbolo} {monto.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></p>
 
         <p className="text-[11px] text-gray-500 font-mono mt-auto pt-2 border-t border-gray-100">Subido: {voucher.fecha_importacion ? new Date(voucher.fecha_importacion).toLocaleDateString('es-PE') : '---'}</p>
@@ -396,7 +409,7 @@ export default function BovedaView() {
         </div>
       )}
 
-      {/* 🚨 NUEVO: MODAL MAESTRO "VER" (Reporte IA + S3) */}
+      {/* MODAL MAESTRO "VER" (Reporte IA + S3) */}
       {selectedVoucher && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setSelectedVoucher(null)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>

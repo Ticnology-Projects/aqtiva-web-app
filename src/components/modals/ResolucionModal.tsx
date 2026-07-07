@@ -315,14 +315,40 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
               </h2>
             </div>
 
-            <div className="bg-amber-50/60 border border-amber-200 rounded-xl p-4">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[10px] font-bold text-amber-700 uppercase tracking-widest block">Diagnóstico IA</span>
-                <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${confianza === 'ALTO' ? 'bg-green-100 text-green-800' : ['AMBIGUO', 'MEDIO'].includes(confianza) ? 'bg-amber-200 text-amber-900' : 'bg-red-100 text-red-800'}`}>
-                  {confianza === 'MEDIO' ? 'AMBIGUO' : confianza}
-                </span>
+            {/* 🚨 REPORTE DE IA ACTUALIZADO A LA NUEVA ESTRUCTURA */}
+            <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-indigo-100 pb-2">
+                <span className="text-[10px] font-bold text-indigo-800 uppercase tracking-widest block">Diagnóstico IA</span>
+                <div className="flex gap-2">
+                   {voucher.conciliacion?.tipo_conciliacion && (
+                     <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-200 text-indigo-900">
+                       {voucher.conciliacion.tipo_conciliacion}
+                     </span>
+                   )}
+                   <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${confianza === 'ALTO' ? 'bg-green-100 text-green-800' : ['AMBIGUO', 'MEDIO'].includes(confianza) ? 'bg-amber-200 text-amber-900' : 'bg-red-100 text-red-800'}`}>
+                     {confianza === 'MEDIO' ? 'AMBIGUO' : confianza}
+                   </span>
+                </div>
               </div>
-              <p className="text-xs text-amber-900 leading-relaxed font-medium">{voucher.conciliacion?.justificacion}</p>
+              
+              {voucher.conciliacion?.analisis_matematico && (
+                <div>
+                  <h4 className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest mb-1">Análisis Matemático</h4>
+                  <p className="text-xs text-indigo-900 leading-relaxed font-medium">{voucher.conciliacion.analisis_matematico}</p>
+                </div>
+              )}
+              
+              {voucher.conciliacion?.justificacion_identidad && (
+                <div className="pt-2 border-t border-indigo-100">
+                  <h4 className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest mb-1">Justificación de Identidad</h4>
+                  <p className="text-xs text-indigo-900 leading-relaxed font-medium">{voucher.conciliacion.justificacion_identidad}</p>
+                </div>
+              )}
+
+              {/* Fallback para el modelo anterior si justificacion_identidad no existe */}
+              {!voucher.conciliacion?.analisis_matematico && voucher.conciliacion?.justificacion && (
+                 <p className="text-xs text-indigo-900 leading-relaxed font-medium">{voucher.conciliacion.justificacion}</p>
+              )}
             </div>
 
             <div>
@@ -348,7 +374,6 @@ export default function ResolucionModal({ voucher, onClose, onConfirm, isResolvi
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Search className="h-4 w-4 text-gray-400" />
                 </div>
-                {/* 🚨 TEXTO DEL PLACEHOLDER ACTUALIZADO */}
                 <input
                   type="text"
                   className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg leading-5 bg-gray-50 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"

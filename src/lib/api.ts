@@ -44,7 +44,7 @@ export async function uploadAndMatchInvoice(file: File, empresaRuc: string, onPr
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           s3_key: output_key,
-          empresa_emisora_ruc: empresaRuc // CRÍTICO: La llave Multi-tenant
+          empresa_emisora_ruc: empresaRuc
         }), 
       });
 

@@ -40,6 +40,20 @@ def read_s3_json(key: str) -> dict:
     resp = s3.get_object(Bucket=BUCKET_NAME, Key=key)
     return json.loads(resp["Body"].read(), parse_float=decimal.Decimal)
 
+# ==============================================================================
+# LECTURA DEL DICCIONARIO
+# ==============================================================================
+def get_tenant_dictionary(empresa_emisora_ruc: str) -> str:
+    try:
+        key = f"dictionaries/{empresa_emisora_ruc}.json"
+        resp = s3.get_object(Bucket=BUCKET_NAME, Key=key)
+        dict_data = json.loads(resp["Body"].read())
+        return json.dumps(dict_data, ensure_ascii=False, indent=2)
+    except botocore.exceptions.ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            return "No hay diccionario oficial."
+        return "Error leyendo el diccionario."
+
 def build_query(ext: dict, empresa_ruc: str) -> str:
     parts = []
     numero           = _v(ext, "numero_documento")
@@ -63,15 +77,34 @@ def build_query(ext: dict, empresa_ruc: str) -> str:
 
     return " ".join(parts)
 
-def retrieve_kb(query: str) -> list[dict]:
-    resp = bedrock_agent.retrieve(
-        knowledgeBaseId=KNOWLEDGE_BASE_ID,
-        retrievalQuery={"text": query},
-        retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": KB_N_RESULTS}},
-    )
-    return [{"contenido": r["content"]["text"], "score": decimal.Decimal(str(round(r["score"], 4)))} for r in resp.get("retrievalResults", [])]
+def retrieve_kb(query: str, empresa_emisora_ruc: str) -> list[dict]:
+    filtro = {
+        "equals": {
+            "key": "empresa_emisora_ruc",
+            "value": empresa_emisora_ruc
+        }
+    }
+    try:
+        resp = bedrock_agent.retrieve(
+            knowledgeBaseId=KNOWLEDGE_BASE_ID,
+            retrievalQuery={"text": query},
+            retrievalConfiguration={
+                "vectorSearchConfiguration": {
+                    "numberOfResults": KB_N_RESULTS,
+                    "filter": filtro
+                }
+            },
+        )
+        return [{"contenido": r["content"]["text"], "score": decimal.Decimal(str(round(r["score"], 4)))} for r in resp.get("retrievalResults", [])]
+    except Exception as e:
+        resp = bedrock_agent.retrieve(
+            knowledgeBaseId=KNOWLEDGE_BASE_ID,
+            retrievalQuery={"text": query},
+            retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": KB_N_RESULTS}},
+        )
+        return [{"contenido": r["content"]["text"], "score": decimal.Decimal(str(round(r["score"], 4)))} for r in resp.get("retrievalResults", [])]
 
-def evaluate(ext: dict, candidates: list[dict]) -> dict:
+def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
     extracted_summary = json.dumps({
         "numero_documento":  _v(ext, "numero_documento"),
         "numero_operacion":  _v(ext, "numero_operacion"),
@@ -83,7 +116,14 @@ def evaluate(ext: dict, candidates: list[dict]) -> dict:
 
     candidates_txt = "\n\n".join(f"FACTURA {i + 1}:\n{c['contenido']}" for i, c in enumerate(candidates))
 
-    prompt = f"""Eres un auditor estricto de conciliación de cuentas por cobrar. Tu tarea es cruzar comprobantes bancarios contra facturas y resolver problemas matemáticos de agrupación de pagos.
+    # ==============================================================================
+    # 🚨 PROMPT AVANZADO: FORZANDO LA CADENA DE PENSAMIENTO Y TOLERANCIA CERO
+    # ==============================================================================
+    prompt = f"""Eres un motor de conciliación contable estricto. Tu máxima prioridad es la MATEMÁTICA EXACTA, por encima de las identidades de texto.
+
+<diccionario_clientes_oficial>
+{diccionario_str}
+</diccionario_clientes_oficial>
 
 <comprobante_escaneado>
 {extracted_summary}
@@ -94,32 +134,35 @@ def evaluate(ext: dict, candidates: list[dict]) -> dict:
 </facturas_catalogo>
 
 <instrucciones>
-Sigue estos pasos rigurosamente:
+Sigue este orden lógico de evaluación OBLIGATORIAMENTE:
 
-1. ANÁLISIS INDIVIDUAL O LOTE:
-   - Primero busca 1 sola factura cuyo "Monto Neto a Pagar" (o Total Bruto si no hay detracción) coincida exactamente (±1%) con el monto del comprobante.
-   - Si no hay match 1:1, busca si la SUMA EXACTA de los montos netos de 2 o más facturas del MISMO CLIENTE cuadra con el comprobante.
-   
-2. REGLA DE DETRACCIÓN (CRÍTICA): Usa SIEMPRE el "Monto Neto a Pagar" si la factura está sujeta a detracción.
+1. REGLA DE DETRACCIÓN (CÁLCULO PREVIO):
+   - Revisa todas las facturas. Si alguna indica "Sujeto a Detracción" o tiene una tasa > 0, OBLIGATORIAMENTE calcula su neto: Neto = Bruto - (Bruto * Tasa).
+   - SOLO usa los 'Montos Netos' para comparar contra el importe_pagado del comprobante.
 
-3. NIVELES DE CONFIANZA:
-   ALTO — El monto pagado difiere menos de un 1% del Monto Neto de 1 factura O de la suma de varias. Moneda idéntica. ADEMÁS debe coincidir el numero_operacion, numero_documento o nombre del cliente claramente.
-   MEDIO — Coinciden cliente/documentos, PERO el cliente pagó el Total Bruto ignorando la detracción, faltan unidades significativas o la suma del lote difiere más de 1%.
-   BAJO — Discrepancia total de divisas o nula coincidencia.
-   SIN_MATCH — No hay combinaciones válidas.
+2. BÚSQUEDA MATEMÁTICA (1 a 1 y LOTES):
+   - ¿Hay alguna factura individual o una SUMA de varias facturas de un mismo cliente cuyo Monto Neto dé EXACTAMENTE el monto del comprobante?
+   - Si la matemática cuadra exacto, IGNORA SI EL NOMBRE ES GENÉRICO (ej: "Transferencia BCP", "Abono", "Pago de terceros"). La matemática es la prueba definitiva.
+
+3. REGLA DE TOLERANCIA CERO (¡IMPORTANTE!):
+   - Queda ESTRICTAMENTE PROHIBIDO asignar nivel_confianza "ALTO" si la diferencia matemática entre el comprobante y la(s) factura(s) es mayor a 1.00.
+   - Si la matemática no cuadra exactamente, debes asignar "MEDIO" o "BAJO", incluso si estás 100% seguro de la identidad del cliente en el diccionario.
+
+Piensa paso a paso. Tu primer campo en el JSON debe ser obligatoriamente 'analisis_matematico' explicando tus cálculos de netos y diferencias.
 </instrucciones>
 
-Devuelve ÚNICAMENTE un JSON con este esquema exacto:
+Devuelve ÚNICAMENTE un JSON con esta estructura y en este ORDEN EXACTO:
 {{
+  "analisis_matematico": "string (Escribe paso a paso tus sumas, el cálculo de la detracción y la diferencia final detectada)",
+  "justificacion_identidad": "string (Explica si el nombre del voucher es genérico, válido o si usaste el diccionario)",
   "tipo_conciliacion": "INDIVIDUAL" | "LOTE" | "NINGUNA",
   "facturas_sugeridas": [
-    {{ "numero_documento": "string", "cliente": "string", "ruc": "string", "monto_neto_aplicado": number, "moneda": "string" }}
+    {{ "numero_documento": "string", "cliente": "string", "ruc": "string", "monto_total": number, "monto_neto_aplicado": number, "moneda": "string" }}
   ],
-  "nivel_confianza": "ALTO"|"MEDIO"|"BAJO"|"SIN_MATCH",
-  "score_kb": number,
   "campos_coincidentes": ["string"],
   "campos_discrepantes": ["string"],
-  "justificacion": "string"
+  "nivel_confianza": "ALTO"|"MEDIO"|"BAJO"|"SIN_MATCH",
+  "score_kb": number
 }}"""
 
     body = {"messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}], "max_tokens": 2048, "temperature": 0.0, "anthropic_version": "bedrock-2023-05-31"}
@@ -162,21 +205,38 @@ def lambda_handler(event, context):
         extraccion = extracted.get("extraccion", extracted)
         archivo_original = extracted.get("archivo")
 
+        diccionario_tenant = get_tenant_dictionary(empresa_emisora_ruc)
         query = build_query(extraccion, empresa_emisora_ruc)
-        candidates = retrieve_kb(query)
+        candidates = retrieve_kb(query, empresa_emisora_ruc)
         
         if not candidates:
-            conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "justificacion": "No hay facturas."}
+            conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "analisis_matematico": "No hay facturas candidatas en la base."}
             save_voucher_and_audit(file_name, empresa_emisora_ruc, conc_vacia, [], archivo_original)
             return _ok({"s3_key": s3_key, "empresa_emisora_ruc": empresa_emisora_ruc, "conciliacion": conc_vacia})
 
-        conciliacion = evaluate(extraccion, candidates)
+        conciliacion = evaluate(extraccion, candidates, diccionario_tenant)
         
-        # 🚨 PARCHE RETROCOMPATIBLE (Corregido para DynamoDB)
         monto_origen = _v(extraccion, "importe_total") or _v(extraccion, "monto_pendiente")
-        monto_calc = float(monto_origen) if monto_origen else sum(float(f.get("monto_neto_aplicado", 0)) for f in conciliacion.get("facturas_sugeridas", []))
+        monto_calc = float(monto_origen) if monto_origen else sum(float(f.get("monto_neto_aplicado", f.get("monto_total", 0))) for f in conciliacion.get("facturas_sugeridas", []))
         
-        # Convertimos el float a string y luego a Decimal para que DynamoDB lo acepte
+        # 🚨 VETO MATEMÁTICO DEL SISTEMA (KILL SWITCH) 🚨
+        # Comprobamos con código duro de Python si la IA mintió en la confianza
+        try:
+            m_origen_float = float(monto_origen) if monto_origen else 0.0
+            m_sugerido_float = sum(float(f.get("monto_neto_aplicado", f.get("monto_total", 0))) for f in conciliacion.get("facturas_sugeridas", []))
+            
+            if m_origen_float > 0 and m_sugerido_float > 0:
+                diferencia = abs(m_origen_float - m_sugerido_float)
+                
+                # Si la IA puso ALTO pero se equivocó por más de 1 unidad de la moneda...
+                if diferencia > 1.00 and conciliacion.get("nivel_confianza") == "ALTO":
+                    conciliacion["nivel_confianza"] = "MEDIO"
+                    mensaje_veto = f"\n\n[SISTEMA INTERNO]: Veto activado. La IA intentó asignar confianza ALTA, pero Python detectó una discrepancia matemática de {diferencia:.2f}. Nivel forzado a MEDIO."
+                    conciliacion["analisis_matematico"] = conciliacion.get("analisis_matematico", "") + mensaje_veto
+                    print(mensaje_veto)
+        except Exception as e:
+            print("No se pudo ejecutar el veto matemático:", e)
+        
         conciliacion["importe_pagado"] = decimal.Decimal(str(round(monto_calc, 2)))
         conciliacion["moneda"] = _v(extraccion, "moneda") or "PEN"
 
@@ -185,7 +245,6 @@ def lambda_handler(event, context):
                 doc = fac.get("numero_documento")
                 if doc: fac["PK"] = f"INVOICE#{empresa_emisora_ruc}#{doc}"
             
-            # MAGIA: Creamos el objeto singular para satisfacer a tu script de auto-conciliación
             if len(conciliacion["facturas_sugeridas"]) == 1:
                 conciliacion["factura_sugerida"] = conciliacion["facturas_sugeridas"][0]
 
@@ -195,6 +254,7 @@ def lambda_handler(event, context):
     except Exception as e:
         error_msg = str(e)
         if "NoSuchKey" in error_msg or "AccessDenied" in error_msg: return _err(404, "El archivo OCR aún se está procesando en Textract.")
+        print(f"Error crítico: {e}")
         return _err(500, error_msg)
 
 def _ok(body: dict) -> dict: return {"statusCode": 200, "headers": CORS, "body": json.dumps(body, ensure_ascii=False, cls=DecimalEncoder)}

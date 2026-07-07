@@ -34,7 +34,7 @@ const VisorVoucher = ({ s3_key }: { s3_key: string }) => {
 };
 
 // ==========================================
-// COMPONENTE: REPORTE LEGIBLE DE IA
+// 🚨 COMPONENTE ACTUALIZADO: REPORTE LEGIBLE DE IA
 // ==========================================
 const ReporteIAHumano = ({ data }: { data: any }) => {
   let d = data;
@@ -53,50 +53,110 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
 
   const nivel = getVal(d.nivel_confianza);
   const score = getVal(d.score_kb);
-  const justificacion = getVal(d.justificacion);
+  const analisisMatematico = getVal(d.analisis_matematico) || getVal(d.justificacion); // Fallback por si acaso
+  const justificacionIdentidad = getVal(d.justificacion_identidad);
+  const tipoConciliacion = getVal(d.tipo_conciliacion);
+  const facturasSugeridas = getArray(d.facturas_sugeridas);
   const coincidentes = getArray(d.campos_coincidentes);
   const discrepantes = getArray(d.campos_discrepantes);
 
   return (
-    <div className="space-y-5 text-gray-800 animate-fadeIn h-full overflow-y-auto pr-2 pb-8">
+    <div className="space-y-6 text-gray-800 animate-fadeIn h-full overflow-y-auto pr-2 pb-8">
+      
+      {/* 1. KPIs SUPERIORES */}
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-col items-center justify-center shadow-sm">
           <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Confianza IA</span>
-          <span className={`text-xl font-black ${nivel === 'ALTO' ? 'text-green-600' : nivel === 'AMBIGUO' ? 'text-amber-500' : 'text-red-500'}`}>{nivel}</span>
+          <span className={`text-xl font-black ${nivel === 'ALTO' ? 'text-green-600' : nivel === 'AMBIGUO' || nivel === 'MEDIO' ? 'text-amber-500' : 'text-red-500'}`}>{nivel}</span>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-col items-center justify-center shadow-sm">
-          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Score BD</span>
-          <span className="text-xl font-black text-indigo-600 font-mono">{Number(score || 0).toFixed(4)}</span>
+          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Tipo de Conciliación</span>
+          <span className="text-xl font-black text-indigo-600 tracking-wide">{tipoConciliacion || 'N/A'}</span>
         </div>
       </div>
-      <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4 shadow-sm">
-        <h4 className="text-xs font-bold text-indigo-800 uppercase tracking-widest mb-2 flex items-center gap-2">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-          Razonamiento del Algoritmo
-        </h4>
-        <p className="text-sm text-indigo-900 leading-relaxed font-medium">{justificacion}</p>
+
+      {/* 2. CADENA DE PENSAMIENTO (ANÁLISIS MATEMÁTICO E IDENTIDAD) */}
+      <div className="space-y-3">
+        {analisisMatematico && (
+          <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-4 shadow-sm">
+            <h4 className="text-xs font-bold text-indigo-800 uppercase tracking-widest mb-2 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+              Análisis Matemático
+            </h4>
+            <p className="text-sm text-indigo-900 leading-relaxed font-medium">{analisisMatematico}</p>
+          </div>
+        )}
+
+        {justificacionIdentidad && (
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 shadow-sm">
+            <h4 className="text-xs font-bold text-gray-700 uppercase tracking-widest mb-2 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2"></path></svg>
+              Justificación de Identidad
+            </h4>
+            <p className="text-sm text-gray-700 leading-relaxed">{justificacionIdentidad}</p>
+          </div>
+        )}
       </div>
+
+      {/* 3. FACTURAS VINCULADAS */}
+      {facturasSugeridas.length > 0 && (
+        <div>
+           <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">Factura(s) Sugerida(s)</h4>
+           <div className="space-y-2">
+              {facturasSugeridas.map((fac: any, idx: number) => {
+                 // Soporte seguro para extraer de diccionarios si viene formateado de DynamoDB
+                 const doc = fac.M ? getVal(fac.M.numero_documento) : fac.numero_documento;
+                 const cli = fac.M ? getVal(fac.M.cliente) : fac.cliente;
+                 const mon = fac.M ? getVal(fac.M.moneda) : fac.moneda;
+                 const neto = fac.M ? getVal(fac.M.monto_neto_aplicado) : fac.monto_neto_aplicado;
+                 const total = fac.M ? getVal(fac.M.monto_total) : fac.monto_total;
+                 
+                 const montoMostrar = neto || total || 0;
+                 const simboloMoneda = mon === 'USD' ? '$' : 'S/';
+
+                 return (
+                   <div key={idx} className="bg-white border-2 border-indigo-100 rounded-xl p-4 flex justify-between items-center shadow-sm">
+                      <div>
+                        <p className="text-sm font-bold text-gray-900">{doc}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">{cli}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-gray-400 font-bold uppercase mb-0.5">Neto Aplicado</p>
+                        <p className="text-lg font-black text-indigo-700 font-mono">{simboloMoneda} {Number(montoMostrar).toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+                      </div>
+                   </div>
+                 );
+              })}
+           </div>
+        </div>
+      )}
+
+      {/* 4. COINCIDENTES Y DISCREPANTES */}
       <div className="grid grid-cols-1 gap-4 pt-2">
         <div>
           <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1">
             <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-            Campos Coincidentes
+            Criterios a Favor
           </h4>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-1.5">
             {coincidentes.length > 0 ? coincidentes.map((c: string, i: number) => (
-              <span key={i} className="bg-green-50 border border-green-200 text-green-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase">{c.replace(/_/g, ' ')}</span>
+              <span key={i} className="bg-green-50 border border-green-200 text-green-800 px-3 py-1.5 rounded-lg text-[11px] font-medium leading-tight">
+                {c.replace(/_/g, ' ')}
+              </span>
             )) : <span className="text-xs text-gray-400">Ninguno detectado</span>}
           </div>
         </div>
         <div className="mt-2">
           <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1">
             <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            Campos Discrepantes
+            Criterios en Contra
           </h4>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-1.5">
             {discrepantes.length > 0 ? discrepantes.map((c: string, i: number) => (
-              <span key={i} className="bg-red-50 border border-red-200 text-red-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase">{c.replace(/_/g, ' ')}</span>
-            )) : <span className="text-xs text-gray-400">Ninguno detectado</span>}
+              <span key={i} className="bg-red-50 border border-red-200 text-red-800 px-3 py-1.5 rounded-lg text-[11px] font-medium leading-tight">
+                {c.replace(/_/g, ' ')}
+              </span>
+            )) : <span className="text-xs text-gray-400">Ninguna discrepancia hallada</span>}
           </div>
         </div>
       </div>
@@ -104,6 +164,9 @@ const ReporteIAHumano = ({ data }: { data: any }) => {
   );
 };
 
+// ==========================================
+// VISTA PRINCIPAL AUDITORIA
+// ==========================================
 export default function AuditoriaView() {
   const { data: session } = useSession();
   const [empresas, setEmpresas] = useState<any[]>([]);
@@ -137,7 +200,6 @@ export default function AuditoriaView() {
   useEffect(() => {
     if (!tenantId) return;
 
-    // 🚨 Buscamos las empresas basándonos en el Tenant (ADMIN)
     fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(dataEmp => {
@@ -150,7 +212,6 @@ export default function AuditoriaView() {
   }, [tenantId]);
 
   const handleReversar = async (audit: any) => {
-    // 🚨 Doble protección (Frontend Lock)
     if (userRole !== 'ADMIN') {
       alert("Acceso denegado: Solo el Administrador puede reversar conciliaciones.");
       return;
@@ -189,7 +250,6 @@ export default function AuditoriaView() {
   };
 
   const handleEliminarAuditoria = async (audit: any) => {
-    // 🚨 Doble protección (Frontend Lock)
     if (userRole !== 'ADMIN') {
       alert("Acceso denegado: Solo el Administrador puede eliminar registros del historial.");
       return;
@@ -394,7 +454,6 @@ export default function AuditoriaView() {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-2">
-                          {/* 🚨 REGLA RBAC: Botones de Reversar y Eliminar Exclusivos para el ADMIN */}
                           {userRole === 'ADMIN' ? (
                             <>
                               {audit.estado === "AUDITADO" && audit.tipo_accion !== "REVERSION" && (
@@ -422,10 +481,10 @@ export default function AuditoriaView() {
         )}
       </div>
 
-      {/* 🚨 MODAL DEL REPORTE IA (Se activa al dar clic en el nombre de la factura) */}
+      {/* MODAL DEL REPORTE IA (Se activa al dar clic en el nombre de la factura) */}
       {auditParaVerIA && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" onClick={() => setAuditParaVerIA(null)}>
-          <div className={`bg-white rounded-2xl shadow-2xl w-full ${auditParaVerIA._showImage ? 'max-w-5xl' : 'max-w-2xl'} max-h-[90vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
+          <div className={`bg-white rounded-2xl shadow-2xl w-full ${auditParaVerIA._showImage ? 'max-w-6xl' : 'max-w-2xl'} max-h-[90vh] flex flex-col overflow-hidden`} onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100 bg-gray-50 shrink-0">
               <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                 {auditParaVerIA._showImage ? '📸 Detalle de la Conciliación' : '🤖 Detalles del Análisis IA'}
@@ -433,11 +492,11 @@ export default function AuditoriaView() {
               <button onClick={() => setAuditParaVerIA(null)} className="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
             </div>
             
-            <div className={`p-6 overflow-y-auto flex-1 bg-white custom-scrollbar ${auditParaVerIA._showImage ? 'grid grid-cols-1 md:grid-cols-2 gap-6' : ''}`}>
+            <div className={`p-6 overflow-y-auto flex-1 bg-white custom-scrollbar ${auditParaVerIA._showImage ? 'grid grid-cols-1 md:grid-cols-2 gap-8' : ''}`}>
               
-              {/* 🚨 LADO IZQUIERDO: LA IMAGEN DEL VOUCHER */}
+              {/* LADO IZQUIERDO: LA IMAGEN DEL VOUCHER */}
               {auditParaVerIA._showImage && (
-                <div className="flex flex-col space-y-3 h-full">
+                <div className="flex flex-col space-y-3 h-full border-r border-gray-100 pr-4">
                   <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Comprobante Físico</h3>
                   {auditParaVerIA._fileName && (
                     <p className="text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 p-2 rounded truncate shadow-sm">
@@ -450,8 +509,8 @@ export default function AuditoriaView() {
                 </div>
               )}
               
-              {/* 🚨 LADO DERECHO: EL REPORTE DE IA O MENSAJE MANUAL */}
-              <div className="flex flex-col h-full">
+              {/* LADO DERECHO: EL REPORTE DE IA O MENSAJE MANUAL */}
+              <div className="flex flex-col h-full pl-2">
                   {!auditParaVerIA._showImage && auditParaVerIA._fileName && (
                     <p className="text-sm font-mono text-gray-500 mb-4 bg-gray-100 p-2 rounded truncate">Comprobante de origen: {auditParaVerIA._fileName}</p>
                   )}
@@ -462,7 +521,7 @@ export default function AuditoriaView() {
                     <div className="bg-amber-50 border border-amber-200 text-amber-800 p-8 rounded-xl h-full flex flex-col justify-center items-center text-center min-h-[300px]">
                        <svg className="w-16 h-16 text-amber-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                        <h3 className="font-bold text-xl mb-2">Conciliación Manual</h3>
-                       <p className="text-sm font-medium">Esta factura fue vinculada al voucher de manera manual por el auditor o usando el buscador avanzado. No existe un diagnóstico de la Inteligencia Artificial para esta transacción específica.</p>
+                       <p className="text-sm font-medium">Esta factura fue vinculada al voucher de manera manual por el auditor. No existe un diagnóstico de la Inteligencia Artificial para esta transacción específica.</p>
                     </div>
                   )}
               </div>

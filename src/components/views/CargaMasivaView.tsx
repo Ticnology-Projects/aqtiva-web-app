@@ -1,7 +1,7 @@
 "use client";
 
 import { ExcelUploader } from "@/components/ExcelUploader";
-import { InvoiceUploader } from "@/components/InvoiceUploader";
+import InvoiceUploader from "@/components/InvoiceUploader";
 
 interface CargaMasivaProps {
   onGoToTriaje: () => void;
@@ -33,7 +33,7 @@ export default function CargaMasivaView({ onGoToTriaje }: CargaMasivaProps) {
           </h2>
           <div className="flex-1 min-h-[500px]">
             {/* Al terminar de subir, ejecutamos la función que nos mandó el orquestador para cambiar de pestaña */}
-            <InvoiceUploader onUploadSuccess={onGoToTriaje} />
+            <InvoiceUploader/>
           </div>
         </div>
       </div>

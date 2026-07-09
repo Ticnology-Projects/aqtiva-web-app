@@ -10,7 +10,8 @@ CLAUDE_MODEL_ID   = os.environ.get("CLAUDE_MODEL_ID", "")
 KNOWLEDGE_BASE_ID = os.environ.get("KNOWLEDGE_BASE_ID", "")
 BUCKET_NAME       = os.environ.get("BUCKET_NAME", "")
 REGION            = os.environ.get("AWS_REGION", "us-east-1")
-KB_N_RESULTS      = int(os.environ.get("KB_N_RESULTS", "15")) 
+# 🚨 AUMENTADO A 40 PARA EL MVP
+KB_N_RESULTS      = int(os.environ.get("KB_N_RESULTS", "40"))
 
 bedrock       = boto3.client("bedrock-runtime",       region_name=REGION)
 bedrock_agent = boto3.client("bedrock-agent-runtime", region_name=REGION)
@@ -63,6 +64,7 @@ def build_query(ext: dict, empresa_ruc: str) -> str:
     receptor_nom     = _v(ext, "receptor", "nombre")
     monto            = _v(ext, "monto_pendiente") or _v(ext, "importe_total")
     moneda           = _v(ext, "moneda")
+    fecha_pago       = _v(ext, "fecha_pago") or _v(ext, "fecha_emision")
     
     if numero_operacion: numero_operacion = str(numero_operacion).lstrip("0") or numero_operacion
     
@@ -74,9 +76,55 @@ def build_query(ext: dict, empresa_ruc: str) -> str:
     if emisor_ruc:        parts.append(f"**RUC Origen:** {emisor_ruc}")
     if monto is not None: parts.append(f"**Monto:** {monto}")
     if moneda:            parts.append(f"**Moneda:** {moneda}")
+    if fecha_pago:        parts.append(f"**Fecha de Pago:** {fecha_pago}")
 
     return " ".join(parts)
 
+# ==============================================================================
+# 🚨 NUEVO: OBTENER FACTURAS DIRECTO DE DYNAMODB (Cero puntos ciegos)
+# ==============================================================================
+def retrieve_dynamo_invoices(empresa_emisora_ruc: str) -> list[dict]:
+    prefix = f"INVOICE#{empresa_emisora_ruc}#"
+    try:
+        response = table.scan(
+            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND estado = :estado",
+            ExpressionAttributeValues={
+                ":prefix": prefix,
+                ":sk": "METADATA",
+                ":estado": "PENDIENTE"
+            }
+        )
+        items = response.get("Items", [])
+        
+        candidates = []
+        for item in items:
+            tiene_det = "SI" if str(item.get("tiene_detraccion", "false")).lower() in ["true", "si", "1"] else "NO"
+            neto = item.get('monto_neto_pagar') or item.get('monto', '0')
+            
+            # Formateamos exactamente igual a como responde la Base de Conocimientos
+            contenido = (
+                f"Número Documento: {item.get('numero_documento', '')}\n"
+                f"Cliente: {item.get('cliente', '')}\n"
+                f"RUC Cliente: {item.get('ruc_cliente', '')}\n"
+                f"Monto Total Bruto: {item.get('monto', '0')}\n"
+                f"Moneda: {item.get('moneda', 'PEN')}\n"
+                f"Fecha Emisión: {item.get('fecha_emision', '')}\n"
+                f"Fecha Vencimiento: {item.get('fecha_vencimiento', '')}\n"
+                f"Sujeto a Detracción: {tiene_det}\n"
+                f"Tasa Detracción: {item.get('tasa_detraccion', '0')}\n"
+                f"Monto Neto a Pagar: {neto}\n"
+                f"Estado: {item.get('estado', 'PENDIENTE')}"
+            )
+            candidates.append({"contenido": contenido, "score": decimal.Decimal("1.0000")})
+        
+        return candidates
+    except Exception as e:
+        print(f"Error consultando DynamoDB directamente: {e}")
+        return []
+
+# ==============================================================================
+# FALLBACK: OBTENER DE BEDROCK KNOWLEDGE BASE
+# ==============================================================================
 def retrieve_kb(query: str, empresa_emisora_ruc: str) -> list[dict]:
     filtro = {
         "equals": {
@@ -104,6 +152,20 @@ def retrieve_kb(query: str, empresa_emisora_ruc: str) -> list[dict]:
         )
         return [{"contenido": r["content"]["text"], "score": decimal.Decimal(str(round(r["score"], 4)))} for r in resp.get("retrievalResults", [])]
 
+def parsear_fecha_segura(fecha_str):
+    if not fecha_str: return None
+    import re
+    match = re.search(r'(\d{2})[/.-](\d{2})[/.-](\d{4})|(\d{4})[/.-](\d{2})[/.-](\d{2})', str(fecha_str))
+    if not match: return None
+    
+    g = match.groups()
+    try:
+        if g[0]: return datetime(int(g[2]), int(g[1]), int(g[0]))
+        elif g[3]: return datetime(int(g[3]), int(g[4]), int(g[5]))
+    except:
+        return None
+    return None
+
 def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
     extracted_summary = json.dumps({
         "numero_documento":  _v(ext, "numero_documento"),
@@ -116,10 +178,7 @@ def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
 
     candidates_txt = "\n\n".join(f"FACTURA {i + 1}:\n{c['contenido']}" for i, c in enumerate(candidates))
 
-    # ==============================================================================
-    # 🚨 PROMPT AVANZADO: FORZANDO LA CADENA DE PENSAMIENTO Y TOLERANCIA CERO
-    # ==============================================================================
-    prompt = f"""Eres un motor de conciliación contable estricto. Tu máxima prioridad es la MATEMÁTICA EXACTA, por encima de las identidades de texto.
+    prompt = f"""Eres un motor de conciliación contable estricto. Tu máxima prioridad es la MATEMÁTICA EXACTA y la CRONOLOGÍA LÓGICA, por encima de las identidades de texto.
 
 <diccionario_clientes_oficial>
 {diccionario_str}
@@ -144,20 +203,24 @@ Sigue este orden lógico de evaluación OBLIGATORIAMENTE:
    - ¿Hay alguna factura individual o una SUMA de varias facturas de un mismo cliente cuyo Monto Neto dé EXACTAMENTE el monto del comprobante?
    - Si la matemática cuadra exacto, IGNORA SI EL NOMBRE ES GENÉRICO (ej: "Transferencia BCP", "Abono", "Pago de terceros"). La matemática es la prueba definitiva.
 
-3. REGLA DE TOLERANCIA CERO (¡IMPORTANTE!):
+3. REGLA DE TOLERANCIA CERO - CRONOLOGÍA:
+   - Compara la 'fecha_pago' del comprobante_escaneado con la 'Fecha Emisión' de la(s) factura(s).
+   - Un cliente no puede pagar una factura antes de que esta exista. Si la fecha del comprobante es ANTERIOR a la Fecha de Emisión de la factura sugerida, queda ESTRICTAMENTE PROHIBIDO asignar nivel_confianza "ALTO". Debes bajarlo a "MEDIO" o "BAJO".
+
+4. REGLA DE TOLERANCIA CERO - MATEMÁTICA:
    - Queda ESTRICTAMENTE PROHIBIDO asignar nivel_confianza "ALTO" si la diferencia matemática entre el comprobante y la(s) factura(s) es mayor a 1.00.
    - Si la matemática no cuadra exactamente, debes asignar "MEDIO" o "BAJO", incluso si estás 100% seguro de la identidad del cliente en el diccionario.
 
-Piensa paso a paso. Tu primer campo en el JSON debe ser obligatoriamente 'analisis_matematico' explicando tus cálculos de netos y diferencias.
+Piensa paso a paso. Tu primer campo en el JSON debe ser obligatoriamente 'analisis_matematico' explicando tus cálculos de netos, diferencias y la VALIDACIÓN DE FECHAS.
 </instrucciones>
 
 Devuelve ÚNICAMENTE un JSON con esta estructura y en este ORDEN EXACTO:
 {{
-  "analisis_matematico": "string (Escribe paso a paso tus sumas, el cálculo de la detracción y la diferencia final detectada)",
+  "analisis_matematico": "string (Escribe paso a paso tus sumas, el cálculo de la detracción, la diferencia final detectada y valida expresamente si la fecha del comprobante es igual o posterior a la fecha de emisión de la factura)",
   "justificacion_identidad": "string (Explica si el nombre del voucher es genérico, válido o si usaste el diccionario)",
   "tipo_conciliacion": "INDIVIDUAL" | "LOTE" | "NINGUNA",
   "facturas_sugeridas": [
-    {{ "numero_documento": "string", "cliente": "string", "ruc": "string", "monto_total": number, "monto_neto_aplicado": number, "moneda": "string" }}
+    {{ "numero_documento": "string", "cliente": "string", "ruc": "string", "monto_total": number, "monto_neto_aplicado": number, "moneda": "string", "fecha_emision": "string" }}
   ],
   "campos_coincidentes": ["string"],
   "campos_discrepantes": ["string"],
@@ -175,17 +238,32 @@ Devuelve ÚNICAMENTE un JSON con esta estructura y en este ORDEN EXACTO:
 
 def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candidates, archivo_original=None):
     processed_s3_key = f"processed/{file_name}.json"
+    
+    # Hacemos una copia de la respuesta de la IA
     datos_s3 = conciliacion.copy()
-    if archivo_original: datos_s3["archivo"] = archivo_original
+    if archivo_original: 
+        datos_s3["archivo"] = archivo_original
+    
+    # 🚨 NUEVO: Inyectamos el catálogo exacto que se le dio a la IA para depuración
+    datos_s3["candidatos_proporcionados_al_agente"] = candidates
         
-    s3.put_object(Bucket=BUCKET_NAME, Key=processed_s3_key, Body=json.dumps(datos_s3, ensure_ascii=False, cls=DecimalEncoder), ContentType="application/json")
+    s3.put_object(
+        Bucket=BUCKET_NAME, 
+        Key=processed_s3_key, 
+        Body=json.dumps(datos_s3, ensure_ascii=False, cls=DecimalEncoder), 
+        ContentType="application/json"
+    )
     
     timestamp = datetime.utcnow().isoformat() + "Z"
+    
     table.put_item(Item={
         "PK": f"VOUCHER#{file_name}", "SK": "METADATA", "fileName": file_name, "s3_key": processed_s3_key,
         "empresa_emisora_ruc": empresa_emisora_ruc, "estado": "PENDIENTE_REVISION",
-        "conciliacion": conciliacion, "candidatos_kb": candidates, "fecha_importacion": timestamp
+        "conciliacion": conciliacion, 
+        "candidatos_kb": candidates, # Esto ya se guardaba en DynamoDB
+        "fecha_importacion": timestamp
     })
+    
     table.put_item(Item={
         "PK": f"AUDIT#{timestamp}#VOUCHER_{file_name}", "SK": "METADATA", "tipo_accion": "ANALISIS_IA",
         "numero_documento": "VOUCHER", "voucher_vinculado": processed_s3_key, "empresa_emisora_ruc": empresa_emisora_ruc,
@@ -206,11 +284,18 @@ def lambda_handler(event, context):
         archivo_original = extracted.get("archivo")
 
         diccionario_tenant = get_tenant_dictionary(empresa_emisora_ruc)
-        query = build_query(extraccion, empresa_emisora_ruc)
-        candidates = retrieve_kb(query, empresa_emisora_ruc)
+        
+        # 🚨 FLUJO HÍBRIDO: Primero intentamos con la data en vivo de DynamoDB
+        candidates = retrieve_dynamo_invoices(empresa_emisora_ruc)
+        
+        # 🚨 FALLBACK: Si Dynamo falla o extrañamente no trae nada, usamos Knowledge Base
+        if not candidates:
+            print("Fallback a Bedrock Knowledge Base...")
+            query = build_query(extraccion, empresa_emisora_ruc)
+            candidates = retrieve_kb(query, empresa_emisora_ruc)
         
         if not candidates:
-            conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "analisis_matematico": "No hay facturas candidatas en la base."}
+            conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "analisis_matematico": "No hay facturas pendientes en la base de datos para esta empresa."}
             save_voucher_and_audit(file_name, empresa_emisora_ruc, conc_vacia, [], archivo_original)
             return _ok({"s3_key": s3_key, "empresa_emisora_ruc": empresa_emisora_ruc, "conciliacion": conc_vacia})
 
@@ -218,24 +303,42 @@ def lambda_handler(event, context):
         
         monto_origen = _v(extraccion, "importe_total") or _v(extraccion, "monto_pendiente")
         monto_calc = float(monto_origen) if monto_origen else sum(float(f.get("monto_neto_aplicado", f.get("monto_total", 0))) for f in conciliacion.get("facturas_sugeridas", []))
-        
-        # 🚨 VETO MATEMÁTICO DEL SISTEMA (KILL SWITCH) 🚨
-        # Comprobamos con código duro de Python si la IA mintió en la confianza
+        fecha_pago_origen = _v(extraccion, "fecha_pago") or _v(extraccion, "fecha_emision")
+
+        # 🚨 VETO DEL SISTEMA (KILL SWITCH MULTIPLE) 🚨
         try:
             m_origen_float = float(monto_origen) if monto_origen else 0.0
             m_sugerido_float = sum(float(f.get("monto_neto_aplicado", f.get("monto_total", 0))) for f in conciliacion.get("facturas_sugeridas", []))
             
+            mensajes_veto = []
+            bajar_a_medio = False
+
             if m_origen_float > 0 and m_sugerido_float > 0:
                 diferencia = abs(m_origen_float - m_sugerido_float)
-                
-                # Si la IA puso ALTO pero se equivocó por más de 1 unidad de la moneda...
-                if diferencia > 1.00 and conciliacion.get("nivel_confianza") == "ALTO":
-                    conciliacion["nivel_confianza"] = "MEDIO"
-                    mensaje_veto = f"\n\n[SISTEMA INTERNO]: Veto activado. La IA intentó asignar confianza ALTA, pero Python detectó una discrepancia matemática de {diferencia:.2f}. Nivel forzado a MEDIO."
-                    conciliacion["analisis_matematico"] = conciliacion.get("analisis_matematico", "") + mensaje_veto
-                    print(mensaje_veto)
+                if diferencia > 1.00:
+                    bajar_a_medio = True
+                    mensajes_veto.append(f"discrepancia matemática de {diferencia:.2f}")
+
+            fecha_voucher_dt = parsear_fecha_segura(fecha_pago_origen)
+            sugeridas = conciliacion.get("facturas_sugeridas", [])
+            
+            if fecha_voucher_dt and len(sugeridas) > 0:
+                for fac in sugeridas:
+                    fecha_fac_dt = parsear_fecha_segura(fac.get("fecha_emision"))
+                    if fecha_fac_dt and fecha_voucher_dt < fecha_fac_dt:
+                        bajar_a_medio = True
+                        mensajes_veto.append(f"anacronismo detectado (El voucher es del {fecha_pago_origen}, pero la factura se emitió después, el {fac.get('fecha_emision')})")
+                        break 
+
+            if bajar_a_medio and conciliacion.get("nivel_confianza") == "ALTO":
+                conciliacion["nivel_confianza"] = "MEDIO"
+                motivos_unidos = " y ".join(mensajes_veto)
+                mensaje_final = f"\n\n[SISTEMA INTERNO]: Veto activado. La IA intentó asignar confianza ALTA, pero Python detectó: {motivos_unidos}. Nivel forzado a MEDIO."
+                conciliacion["analisis_matematico"] = conciliacion.get("analisis_matematico", "") + mensaje_final
+                print(mensaje_final)
+
         except Exception as e:
-            print("No se pudo ejecutar el veto matemático:", e)
+            print("No se pudo ejecutar el veto del sistema:", e)
         
         conciliacion["importe_pagado"] = decimal.Decimal(str(round(monto_calc, 2)))
         conciliacion["moneda"] = _v(extraccion, "moneda") or "PEN"

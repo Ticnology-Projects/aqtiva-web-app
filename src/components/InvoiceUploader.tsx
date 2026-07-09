@@ -1,237 +1,282 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
+import { Upload, X, File as FileIcon, CheckCircle, AlertCircle } from "lucide-react";
 import { uploadAndMatchInvoice } from "@/lib/api";
 import { useSession } from "next-auth/react";
 
-interface InvoiceUploaderProps {
-  onUploadSuccess: (resultados: any[]) => void; 
+interface UploadedFile {
+  file: File;
+  id: string;
+  status: "idle" | "uploading" | "success" | "error" | "resolved";
+  progress: number;
+  matchResult?: any;
+  message?: string;
+  companyRuc?: string; 
 }
 
-export function InvoiceUploader({ onUploadSuccess }: InvoiceUploaderProps) {
+export default function InvoiceUploader() {
   const { data: session } = useSession();
-  
-  // Estados de empresa
-  const [empresas, setEmpresas] = useState<any[]>([]);
-  const [selectedEmpresa, setSelectedEmpresa] = useState<string>("");
-  const [isLoadingEmpresas, setIsLoadingEmpresas] = useState(true);
-
-  // Estados de archivos
-  const [files, setFiles] = useState<File[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [currentFileIndex, setCurrentFileIndex] = useState(0);
-  const [fileStatus, setFileStatus] = useState<Record<string, string>>({});
-  
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  
+  const [empresas, setEmpresas] = useState<any[]>([]);
+  const [selectedCompanyRuc, setSelectedCompanyRuc] = useState<string>("");
 
-  // 1. Cargar empresas al inicio usando el TenantId
+  const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
+
   useEffect(() => {
-    if (!session?.user?.email) return;
-
-    // 🚨 MAGIA MULTI-TENANT: Usamos tenantId si existe
-    const tenantId = (session.user as any).tenantId || session.user.email;
-
+    if (!tenantId) return;
+    
     fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(data => {
-        if (data.success) setEmpresas(data.data);
+        if (data.success && data.data.length > 0) {
+          setEmpresas(data.data);
+          setSelectedCompanyRuc(data.data[0].ruc); 
+        }
       })
-      .catch(err => console.error(err))
-      .finally(() => setIsLoadingEmpresas(false));
-  }, [session]);
+      .catch(err => console.error("Error cargando empresas:", err));
+  }, [tenantId]);
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    if (selectedEmpresa) setIsDragOver(true);
-  }, [selectedEmpresa]);
+    setIsDragging(true);
+  };
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  }, []);
+  const handleDragLeave = () => setIsDragging(false);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (!selectedEmpresa) {
-      alert("Selecciona primero la empresa cobradora.");
+  const processFiles = (newFiles: FileList | File[]) => {
+    if (!selectedCompanyRuc) {
+      alert("Por favor, selecciona una empresa recaudadora antes de subir archivos.");
       return;
     }
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setFiles((prev) => [...prev, ...Array.from(e.dataTransfer.files)]);
-    }
-  }, [selectedEmpresa]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
+    const validFiles = Array.from(newFiles).filter(
+      (file) => file.type.startsWith("image/") || file.type === "application/pdf"
+    );
+
+    if (validFiles.length !== newFiles.length) {
+      alert("Solo se admiten imágenes (JPG, PNG) y PDFs.");
+    }
+
+    const fileObjects: UploadedFile[] = validFiles.map((file) => ({
+      file,
+      id: Math.random().toString(36).substring(7),
+      status: "idle",
+      progress: 0,
+      companyRuc: selectedCompanyRuc
+    }));
+
+    setFiles((prev) => [...prev, ...fileObjects]);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    processFiles(e.dataTransfer.files);
+  };
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      processFiles(e.target.files);
     }
   };
 
-  const removeFile = (indexToRemove: number) => {
-    setFiles(files.filter((_, index) => index !== indexToRemove));
+  const removeFile = (id: string) => {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  const handleUploadAll = async () => {
-    if (files.length === 0 || !selectedEmpresa) return;
-    
-    setIsUploading(true);
-    setCurrentFileIndex(0);
-    
-    let successCount = 0;
-    let autoConciliados = 0; 
-    const resultadosBatch: any[] = [];
+  const uploadFiles = async () => {
+    setIsProcessing(true);
+    const filesToUpload = files.filter((f) => f.status === "idle" || f.status === "error");
 
-    // Procesamos secuencialmente
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      setCurrentFileIndex(i + 1);
-      
+    for (const fileObj of filesToUpload) {
+      setFiles((prev) =>
+        prev.map((f) => (f.id === fileObj.id ? { ...f, status: "uploading", progress: 10, message: "Iniciando..." } : f))
+      );
+
       try {
-        const result = await uploadAndMatchInvoice(file, selectedEmpresa, (progressMessage) => {
-          setFileStatus((prev) => ({ ...prev, [file.name]: progressMessage }));
-        });
-        
-        const conciliacion = result.data?.conciliacion;
-        
-        // Auto-conciliación si hay alta certeza
-        if (conciliacion?.nivel_confianza === "ALTO" && conciliacion?.factura_sugerida) {
-          setFileStatus((prev) => ({ ...prev, [file.name]: "🤖 Match ALTO: Auto-conciliando..." }));
-          
-          const s3KeyOriginal = result.data.s3_key || "";
-          const baseName = s3KeyOriginal.split('/').pop()?.replace('.json', '') || file.name;
-          const processedS3Key = `processed/${baseName}.json`;
-          const voucherPK = `VOUCHER#${baseName}`;
+        const result = await uploadAndMatchInvoice(
+          fileObj.file, 
+          fileObj.companyRuc!,
+          (msg: string) => {
+            setFiles((prev) =>
+              prev.map((f) => (f.id === fileObj.id ? { ...f, message: msg, progress: f.progress < 90 ? f.progress + 15 : 90 } : f))
+            );
+          }
+        );
 
-          const autoRes = await fetch("/api/facturas/resolver", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              factura_pk: conciliacion.factura_sugerida.PK, 
-              numero_documento: conciliacion.factura_sugerida.numero_documento, 
-              s3_key_voucher: processedS3Key, 
-              PK_Voucher: voucherPK,
-              es_automatico: true
-            })
+        const confianza = result.data?.conciliacion?.nivel_confianza;
+        const facturas = result.data?.conciliacion?.facturas_sugeridas || [];
+        
+        // 🚨 BLOQUE DE AUTOCONCILIACIÓN CORREGIDO
+        if (confianza === "ALTO" && facturas.length > 0) {
+          
+          // 1. Extraemos el nombre exacto con el que el backend guardó el Voucher en DynamoDB
+          const s3KeyRecibido = result.data?.s3_key || "";
+          const baseName = s3KeyRecibido.split('/').pop()?.replace('.json', '') || fileObj.file.name;
+          
+          // 2. Mapeo universal y seguro de facturas (Sirve para Lotes y para Individuales)
+          const facturasAProcesar = facturas.map((f: any) => ({
+              PK: f.PK,
+              numero_documento: f.numero_documento
+          }));
+
+          const resAutocierre = await fetch("/api/facturas/resolver", {
+             method: "POST",
+             headers: { "Content-Type": "application/json" },
+             body: JSON.stringify({
+                 es_automatico: true,
+                 PK_Voucher: `VOUCHER#${baseName}`, // Ahora apunta al ID correcto
+                 s3_key_voucher: `processed/${baseName}.json`,
+                 facturas: facturasAProcesar
+             })
           });
 
-          const autoData = await autoRes.json();
-          if (autoData.success) {
-             setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado y Auto-conciliado" }));
-             autoConciliados++;
+          if (resAutocierre.ok) {
+             setFiles((prev) =>
+               prev.map((f) => (f.id === fileObj.id ? { ...f, status: "resolved", progress: 100, message: "¡Match Perfecto! Autocerrado." } : f))
+             );
+             continue; // Pasamos al siguiente archivo sin marcarlo como "success" manual
           } else {
-             setFileStatus((prev) => ({ ...prev, [file.name]: "⚠️ Procesado, pero falló la auto-conciliación" }));
+             const errorData = await resAutocierre.json();
+             console.error(`Fallo silencioso en autocierre para ${baseName}:`, errorData);
+             // Si falla el autocierre, la ejecución continúa y el voucher cae en la bandeja manual de Triaje (success)
           }
-        } else {
-          setFileStatus((prev) => ({ ...prev, [file.name]: "✅ Procesado (Enviado a Triaje)" }));
         }
 
-        resultadosBatch.push({ fileName: file.name, ...result.data });
-        successCount++;
-        
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === fileObj.id
+              ? { ...f, status: "success", progress: 100, matchResult: result.data, message: "Enviado a Triaje." }
+              : f
+          )
+        );
       } catch (error: any) {
-        setFileStatus((prev) => ({ ...prev, [file.name]: `❌ Error: ${error.message}` }));
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === fileObj.id
+              ? { ...f, status: "error", progress: 0, message: error.message || "Error al procesar" }
+              : f
+          )
+        );
       }
     }
-
-    setIsUploading(false);
-    
-    setTimeout(() => {
-      alert(`Lote finalizado: ${successCount} comprobantes analizados.\n🤖 ${autoConciliados} se auto-conciliaron y ${successCount - autoConciliados} pasaron a Triaje.`);
-      setFiles([]);
-      setFileStatus({});
-      onUploadSuccess(resultadosBatch); 
-    }, 1500);
+    setIsProcessing(false);
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full">
-      <div className="p-6 border-b border-gray-200 bg-gray-50">
-        <h2 className="text-lg font-bold text-gray-800">Analizar Vouchers</h2>
-        <p className="text-sm text-gray-500">Arrastra comprobantes (PDF, JPG, PNG)</p>
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      
+      <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center gap-4">
+        <label className="text-sm font-bold text-gray-700 whitespace-nowrap">🏦 Cuenta Recaudadora:</label>
+        <select 
+          value={selectedCompanyRuc} 
+          onChange={(e) => setSelectedCompanyRuc(e.target.value)}
+          className="block w-full max-w-md pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm bg-white"
+        >
+          {empresas.length === 0 ? (
+            <option value="">Cargando empresas...</option>
+          ) : (
+            empresas.map((emp) => (
+              <option key={emp.ruc} value={emp.ruc}>
+                {emp.nombreOriginal} (RUC: {emp.ruc})
+              </option>
+            ))
+          )}
+        </select>
       </div>
 
-      <div className="p-6 flex-1 flex flex-col">
-        {/* SELECTOR DE EMPRESA */}
-        <div className="flex flex-col space-y-2 mb-6">
-          <label className="text-sm font-bold text-gray-700">Empresa (A la que le pagaron) <span className="text-indigo-500">*</span></label>
-          <select 
-            value={selectedEmpresa}
-            onChange={(e) => setSelectedEmpresa(e.target.value)}
-            disabled={isUploading}
-            className="border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-gray-700"
-          >
-            <option value="">-- Selecciona una empresa --</option>
-            {empresas.map((emp, idx) => (
-              <option key={idx} value={emp.ruc}>{emp.nombreOriginal} (RUC: {emp.ruc})</option>
-            ))}
-          </select>
+      <div className="p-6">
+        <div
+          className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
+            isDragging ? "border-indigo-500 bg-indigo-50" : "border-gray-300 hover:bg-gray-50"
+          }`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <input
+            type="file"
+            multiple
+            accept="image/jpeg,image/png,application/pdf"
+            className="hidden"
+            ref={fileInputRef}
+            onChange={handleFileInput}
+          />
+          <div className="mx-auto w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center mb-4">
+            <Upload className="w-6 h-6 text-indigo-600" />
+          </div>
+          <h3 className="text-sm font-bold text-gray-900 mb-1">Subir Comprobantes Bancarios</h3>
+          <p className="text-xs text-gray-500 mb-4">Arrastra tus archivos aquí o haz clic para buscar</p>
+          <p className="text-[10px] text-gray-400">JPG, PNG o PDF hasta 5MB</p>
         </div>
 
-        {/* Zona Dropzone */}
-        {!isUploading && (
-          <div 
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => {
-              if(!selectedEmpresa) alert("Selecciona una empresa primero.");
-              else fileInputRef.current?.click();
-            }}
-            className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ${
-              !selectedEmpresa ? "border-gray-200 bg-gray-50 cursor-not-allowed opacity-60" :
-              isDragOver ? "border-indigo-500 bg-indigo-50 cursor-pointer" : "border-gray-300 hover:border-indigo-400 hover:bg-gray-50 cursor-pointer"
-            }`}
-          >
-            <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileChange} accept=".pdf,.png,.jpg,.jpeg" disabled={!selectedEmpresa} />
-            <div className={`mx-auto w-12 h-12 mb-3 ${selectedEmpresa ? "text-indigo-400" : "text-gray-300"}`}>
-              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            </div>
-            <p className="text-gray-600 font-medium">Arrastra tus archivos aquí</p>
-          </div>
-        )}
-
-        {/* Lista de archivos en cola */}
         {files.length > 0 && (
-          <div className="mt-4 flex-1 overflow-y-auto max-h-[180px] pr-2 custom-scrollbar">
-            <ul className="space-y-2">
-              {files.map((file, index) => (
-                <li key={index} className="bg-gray-50 border border-gray-100 rounded-lg p-3 text-sm">
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-700 font-medium truncate pr-4">📄 {file.name}</span>
-                    {!isUploading && (
-                      <button onClick={() => removeFile(index)} className="text-red-400 hover:text-red-600">✕</button>
+          <div className="mt-6">
+            <div className="flex justify-between items-center mb-4">
+              <h4 className="text-sm font-bold text-gray-900">Cola de Procesamiento ({files.length})</h4>
+              <button
+                onClick={uploadFiles}
+                disabled={isProcessing || !files.some((f) => f.status === "idle" || f.status === "error")}
+                className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-indigo-700 transition-colors disabled:opacity-50 shadow-sm"
+              >
+                {isProcessing ? "Procesando..." : "Iniciar Carga Masiva"}
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+              {files.map((fileObj) => (
+                <div key={fileObj.id} className="bg-gray-50 border border-gray-200 rounded-lg p-3 flex items-center justify-between">
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className="w-8 h-8 bg-white rounded shadow-sm border border-gray-100 flex items-center justify-center flex-shrink-0">
+                      <FileIcon className="w-4 h-4 text-indigo-500" />
+                    </div>
+                    <div className="truncate">
+                      <p className="text-xs font-bold text-gray-900 truncate">{fileObj.file.name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <p className="text-[10px] text-gray-500">{(fileObj.file.size / 1024 / 1024).toFixed(2)} MB</p>
+                        {fileObj.message && (
+                          <>
+                            <span className="w-1 h-1 rounded-full bg-gray-300"></span>
+                            <p className={`text-[10px] font-medium truncate max-w-[200px] ${
+                              fileObj.status === 'error' ? 'text-red-500' : 
+                              fileObj.status === 'resolved' ? 'text-green-600' :
+                              fileObj.status === 'success' ? 'text-amber-600' : 'text-indigo-600'
+                            }`}>
+                              {fileObj.message}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    {fileObj.status === "uploading" && (
+                      <div className="w-16 bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                        <div className="bg-indigo-600 h-1.5 rounded-full transition-all duration-300" style={{ width: `${fileObj.progress}%` }}></div>
+                      </div>
+                    )}
+                    
+                    {fileObj.status === "resolved" && <CheckCircle className="w-5 h-5 text-green-500" />}
+                    {fileObj.status === "success" && <div className="w-5 h-5 rounded-full border-2 border-amber-500 flex items-center justify-center"><span className="w-1 h-1 bg-amber-500 rounded-full"></span></div>}
+                    {fileObj.status === "error" && <AlertCircle className="w-5 h-5 text-red-500" />}
+                    
+                    {fileObj.status === "idle" && (
+                      <button onClick={() => removeFile(fileObj.id)} className="text-gray-400 hover:text-red-500 transition-colors">
+                        <X className="w-4 h-4" />
+                      </button>
                     )}
                   </div>
-                  {(isUploading && fileStatus[file.name]) && (
-                    <div className="mt-2 text-xs font-mono text-indigo-600 bg-indigo-50 px-2 py-1 rounded">{fileStatus[file.name]}</div>
-                  )}
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           </div>
-        )}
-      </div>
-
-      {/* Footer de Acción */}
-      <div className="p-6 bg-gray-50 border-t border-gray-200 mt-auto">
-        {isUploading ? (
-           <div className="space-y-2">
-             <div className="flex justify-between text-xs font-bold text-gray-700">
-               <span>Analizando lote...</span>
-               <span>{currentFileIndex} / {files.length}</span>
-             </div>
-             <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-indigo-600 h-2 rounded-full transition-all" style={{ width: `${(currentFileIndex / files.length) * 100}%` }}></div></div>
-           </div>
-        ) : (
-          <button
-            onClick={handleUploadAll}
-            disabled={files.length === 0 || !selectedEmpresa}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Iniciar Conciliación de {files.length || ""} Vouchers
-          </button>
         )}
       </div>
     </div>

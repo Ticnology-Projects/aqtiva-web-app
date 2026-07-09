@@ -32,7 +32,7 @@ export async function uploadAndMatchInvoice(file: File, empresaRuc: string, onPr
     // Paso 3: Polling al Motor de Match
     onProgress("Analizando documento con IA (esto tomará unos 10 segundos)...");
     
-    await sleep(6000); 
+    await sleep(10000); 
 
     let matchResult = null;
     const maxRetries = 10; 

@@ -1,6 +1,7 @@
 import json
 import os
 import decimal
+import re
 from datetime import datetime
 
 import boto3
@@ -80,6 +81,54 @@ def build_query(ext: dict, empresa_ruc: str) -> str:
 
     return " ".join(parts)
 
+def retrieve_dynamo_invoices(empresa_emisora_ruc: str):
+    prefix = f"INVOICE#{empresa_emisora_ruc}#"
+    candidates = []
+    raw_db_items = []
+    try:
+        kwargs = {
+            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk AND #st = :estado",
+            "ExpressionAttributeNames": { "#st": "estado" },
+            "ExpressionAttributeValues": {
+                ":prefix": prefix,
+                ":sk": "METADATA",
+                ":estado": "PENDIENTE"
+            }
+        }
+        response = table.scan(**kwargs)
+        items = response.get("Items", [])
+        
+        while 'LastEvaluatedKey' in response:
+            kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
+            response = table.scan(**kwargs)
+            items.extend(response.get("Items", []))
+            
+        raw_db_items = items
+            
+        for item in items:
+            tiene_det = "SI" if str(item.get("tiene_detraccion", "false")).lower() in ["true", "si", "1"] else "NO"
+            neto = item.get('monto_neto_pagar') or item.get('monto', '0')
+            
+            contenido = (
+                f"Número Documento: {item.get('numero_documento', '')}\n"
+                f"Cliente: {item.get('cliente', '')}\n"
+                f"RUC Cliente: {item.get('ruc_cliente', '')}\n"
+                f"Monto Total Bruto: {item.get('monto', '0')}\n"
+                f"Moneda: {item.get('moneda', 'PEN')}\n"
+                f"Fecha Emisión: {item.get('fecha_emision', '')}\n"
+                f"Fecha Vencimiento: {item.get('fecha_vencimiento', '')}\n"
+                f"Sujeto a Detracción: {tiene_det}\n"
+                f"Tasa Detracción: {item.get('tasa_detraccion', '0')}\n"
+                f"Monto Neto a Pagar: {neto}\n"
+                f"Estado: {item.get('estado', 'PENDIENTE')}"
+            )
+            candidates.append({"contenido": contenido, "score": decimal.Decimal("1.0000")})
+        
+        return candidates, raw_db_items
+    except Exception as e:
+        print(f"Error consultando DynamoDB: {e}")
+        return [], []
+
 def retrieve_kb(query: str, empresa_emisora_ruc: str) -> list[dict]:
     filtro = {"equals": {"key": "empresa_emisora_ruc", "value": empresa_emisora_ruc}}
     try:
@@ -97,7 +146,6 @@ def retrieve_kb(query: str, empresa_emisora_ruc: str) -> list[dict]:
 
 def parsear_fecha_segura(fecha_str):
     if not fecha_str: return None
-    import re
     match = re.search(r'(\d{2})[/.-](\d{2})[/.-](\d{4})|(\d{4})[/.-](\d{2})[/.-](\d{2})', str(fecha_str))
     if not match: return None
     g = match.groups()
@@ -106,6 +154,15 @@ def parsear_fecha_segura(fecha_str):
         elif g[3]: return datetime(int(g[3]), int(g[4]), int(g[5]))
     except: return None
     return None
+
+# 🚨 NUEVA FUNCIÓN: Conversión matemática segura
+def safe_float(val):
+    if not val: return 0.0
+    try:
+        clean_val = re.sub(r'[^\d.-]', '', str(val))
+        return float(clean_val) if clean_val else 0.0
+    except:
+        return 0.0
 
 def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
     extracted_summary = json.dumps({
@@ -119,7 +176,7 @@ def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
 
     candidates_txt = "\n\n".join(f"FACTURA {i + 1}:\n{c['contenido']}" for i, c in enumerate(candidates))
 
-    prompt = f"""Eres un motor de conciliación contable estricto. Tu máxima prioridad es la MATEMÁTICA EXACTA y la CRONOLOGÍA LÓGICA, por encima de las identidades de texto.
+    prompt = f"""Eres un motor de conciliación contable estricto. Tu máxima prioridad es la MATEMÁTICA EXACTA y la CRONOLOGÍA LÓGICA.
 
 <diccionario_clientes_oficial>
 {diccionario_str}
@@ -137,24 +194,28 @@ def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
 Sigue este orden lógico de evaluación OBLIGATORIAMENTE:
 
 1. REGLA DE DETRACCIÓN (CÁLCULO PREVIO):
-   - Revisa todas las facturas. Si alguna indica "Sujeto a Detracción" o tiene una tasa > 0, OBLIGATORIAMENTE calcula su neto: Neto = Bruto - (Bruto * Tasa).
-   - SOLO usa los 'Montos Netos' para comparar contra el importe_pagado del comprobante.
+   - Revisa todas las facturas. Si alguna indica "Sujeto a Detracción", calcula su neto: Neto = Bruto - (Bruto * Tasa).
+   - SOLO usa los 'Montos Netos' para comparar.
 
 2. BÚSQUEDA MATEMÁTICA (1 a 1 y LOTES):
-   - ¿Hay alguna factura individual o una SUMA de varias facturas de un mismo cliente cuyo Monto Neto dé EXACTAMENTE el monto del comprobante?
-   - Si la matemática cuadra exacto, IGNORA SI EL NOMBRE ES GENÉRICO.
+   - ¿Hay alguna factura o SUMA de facturas de un mismo cliente cuyo Monto Neto dé EXACTAMENTE el monto del comprobante?
 
-3. REGLA DE TOLERANCIA CERO - PROHIBIDO FRACCIONAR (¡CRÍTICO!):
-   - Queda ESTRICTAMENTE PROHIBIDO inventar pagos parciales. El "monto_neto_aplicado" de la factura sugerida DEBE SER el 100% del "Monto Neto a Pagar" original. Nunca modifiques el monto de una factura.
+3. REGLA DE TOLERANCIA CERO - PROHIBIDO FRACCIONAR:
+   - El "monto_neto_aplicado" sugerido DEBE SER el 100% del "Monto Neto a Pagar" original. Nunca modifiques el monto para forzar un cuadre.
 
-4. REGLA DE TOLERANCIA CERO - CRONOLOGÍA Y MATEMÁTICA:
-   - Si la fecha del comprobante es ANTERIOR a la Fecha de Emisión de la factura sugerida, el nivel_confianza DEBE SER "MEDIO".
-   - Si la diferencia matemática entre el comprobante y la(s) factura(s) es mayor a 1.00, el nivel_confianza DEBE SER "MEDIO" obligatoriamente.
+4. REGLA DE TOLERANCIA CERO - FACTURAS COBRADAS (¡NUEVO Y CRÍTICO!):
+   - Queda ESTRICTAMENTE PROHIBIDO seleccionar o sugerir una factura que tenga "Estado: COBRADO".
+   - Una factura "COBRADA" significa que otro cliente ya la pagó en el pasado. Si la seleccionas, estarás duplicando un pago y cometiendo fraude. 
+   - SOLO puedes conciliar facturas con "Estado: PENDIENTE". Si la única coincidencia matemática ya está COBRADA, debes devolver "nivel_confianza": "SIN_MATCH".
+
+5. REGLA DE TOLERANCIA CERO - CRONOLOGÍA Y MATEMÁTICA:
+   - Si la fecha del comprobante es ANTERIOR a la Fecha de Emisión, el nivel_confianza DEBE SER "MEDIO".
+   - Si la diferencia matemática entre el comprobante y la(s) factura(s) es mayor a 1.00, el nivel_confianza DEBE SER "MEDIO".
 </instrucciones>
 
 Devuelve ÚNICAMENTE un JSON con esta estructura y en este ORDEN EXACTO:
 {{
-  "analisis_matematico": "string (Escribe paso a paso tus cálculos)",
+  "analisis_matematico": "string",
   "justificacion_identidad": "string",
   "tipo_conciliacion": "INDIVIDUAL" | "LOTE" | "NINGUNA",
   "facturas_sugeridas": [
@@ -177,7 +238,7 @@ Devuelve ÚNICAMENTE un JSON con esta estructura y en este ORDEN EXACTO:
     except json.JSONDecodeError:
         raise Exception("La Inteligencia Artificial devolvió una respuesta no válida o en blanco.")
 
-def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candidates, archivo_original=None):
+def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candidates, archivo_original=None, extraccion=None):
     processed_s3_key = f"processed/{file_name}.json"
     datos_s3 = conciliacion.copy()
     if archivo_original: datos_s3["archivo"] = archivo_original
@@ -186,11 +247,20 @@ def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candida
     s3.put_object(Bucket=BUCKET_NAME, Key=processed_s3_key, Body=json.dumps(datos_s3, ensure_ascii=False, cls=DecimalEncoder), ContentType="application/json")
     
     timestamp = datetime.utcnow().isoformat() + "Z"
-    table.put_item(Item={
+    
+    # 🚨 NUEVO: Guardamos el numero_operacion en la raíz de la BD para que el escáner lo vea
+    item_voucher = {
         "PK": f"VOUCHER#{file_name}", "SK": "METADATA", "fileName": file_name, "s3_key": processed_s3_key,
         "empresa_emisora_ruc": empresa_emisora_ruc, "estado": "PENDIENTE_REVISION",
         "conciliacion": conciliacion, "candidatos_kb": candidates, "fecha_importacion": timestamp
-    })
+    }
+    
+    if extraccion:
+        nop = _v(extraccion, "numero_operacion")
+        if nop: item_voucher["numero_operacion"] = str(nop).lstrip("0").strip()
+
+    table.put_item(Item=item_voucher)
+    
     table.put_item(Item={
         "PK": f"AUDIT#{timestamp}#VOUCHER_{file_name}", "SK": "METADATA", "tipo_accion": "ANALISIS_IA",
         "numero_documento": "VOUCHER", "voucher_vinculado": processed_s3_key, "empresa_emisora_ruc": empresa_emisora_ruc,
@@ -212,13 +282,15 @@ def lambda_handler(event, context):
 
         diccionario_tenant = get_tenant_dictionary(empresa_emisora_ruc)
         
-        # 🚨 BÚSQUEDA PRIMARIA: Bedrock KB (Rápido, semántico, pero puede estar desactualizado)
-        query = build_query(extraccion, empresa_emisora_ruc)
-        candidates = retrieve_kb(query, empresa_emisora_ruc)
+        candidates, raw_db_items = retrieve_dynamo_invoices(empresa_emisora_ruc)
+        
+        if not candidates:
+            query = build_query(extraccion, empresa_emisora_ruc)
+            candidates = retrieve_kb(query, empresa_emisora_ruc)
         
         if not candidates:
             conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "analisis_matematico": "No se encontraron facturas."}
-            save_voucher_and_audit(file_name, empresa_emisora_ruc, conc_vacia, [], archivo_original)
+            save_voucher_and_audit(file_name, empresa_emisora_ruc, conc_vacia, [], archivo_original, extraccion)
             return _ok({"s3_key": s3_key, "empresa_emisora_ruc": empresa_emisora_ruc, "conciliacion": conc_vacia})
 
         conciliacion = evaluate(extraccion, candidates, diccionario_tenant)
@@ -227,32 +299,33 @@ def lambda_handler(event, context):
         fecha_pago_origen = _v(extraccion, "fecha_pago") or _v(extraccion, "fecha_emision")
         numero_op_origen = _v(extraccion, "numero_operacion")
 
-        # 🚨 VETOS DE SEGURIDAD EXTREMA DEL SISTEMA (KILL SWITCHES) 🚨
+        # 🚨 VETOS DE SEGURIDAD AISLADOS PARA QUE NO CRASHEEN 🚨
+        mensajes_veto = []
+        bajar_a_medio = False
+        m_origen_float = safe_float(monto_origen)
+        sugeridas = conciliacion.get("facturas_sugeridas", [])
+        
+        m_sugerido_float = 0.0
+        for fac in sugeridas:
+            m_sugerido_float += safe_float(fac.get("monto_neto_aplicado", fac.get("monto_total", 0)))
+
+        # VETO 1: OCR CIEGO
+        if m_origen_float == 0.0:
+            bajar_a_medio = True
+            mensajes_veto.append("El OCR no detectó el monto original del voucher.")
+        
+        # VETO 2: MATEMÁTICA PURA
+        elif m_sugerido_float > 0 and abs(m_origen_float - m_sugerido_float) > 1.00:
+            bajar_a_medio = True
+            mensajes_veto.append(f"Discrepancia matemática de {abs(m_origen_float - m_sugerido_float):.2f}")
+
+        # VETO 3: INTEGRIDAD DE DB EN TIEMPO REAL (FANTASMAS)
         try:
-            mensajes_veto = []
-            bajar_a_medio = False
-            m_origen_float = float(monto_origen) if monto_origen else 0.0
-            sugeridas = conciliacion.get("facturas_sugeridas", [])
-            m_sugerido_float = sum(float(f.get("monto_neto_aplicado", f.get("monto_total", 0))) for f in sugeridas)
-
-            # VETO 1: OCR CIEGO
-            if m_origen_float == 0.0:
-                bajar_a_medio = True
-                mensajes_veto.append("El OCR no detectó el monto original del voucher.")
-            
-            # VETO 2: MATEMÁTICA PURA
-            elif m_sugerido_float > 0 and abs(m_origen_float - m_sugerido_float) > 1.00:
-                bajar_a_medio = True
-                mensajes_veto.append(f"Discrepancia matemática de {abs(m_origen_float - m_sugerido_float):.2f}")
-
-            # 🚨 VETO 3: INTEGRIDAD DE DB EN TIEMPO REAL (FRANCOTIRADOR)
-            # Solo consultamos las facturas específicas que la IA eligió.
             if len(sugeridas) > 0:
                 for fac in sugeridas:
                     doc_sug = fac.get("numero_documento")
-                    monto_sug = float(fac.get("monto_neto_aplicado", 0))
+                    monto_sug = safe_float(fac.get("monto_neto_aplicado", 0))
                     
-                    # Llamada O(1) ultra rápida a DynamoDB
                     db_resp = table.get_item(Key={"PK": f"INVOICE#{empresa_emisora_ruc}#{doc_sug}", "SK": "METADATA"})
                     db_item = db_resp.get("Item")
                     
@@ -261,14 +334,17 @@ def lambda_handler(event, context):
                         mensajes_veto.append(f"La factura {doc_sug} no existe en la BD.")
                     elif db_item.get("estado") != "PENDIENTE":
                         bajar_a_medio = True
-                        mensajes_veto.append(f"CACHÉ FANTASMA: La factura {doc_sug} ya está en estado {db_item.get('estado')}.")
+                        mensajes_veto.append(f"CACHÉ FANTASMA: La factura {doc_sug} ya está {db_item.get('estado')}.")
                     else:
-                        monto_real = float(db_item.get("monto_neto_pagar") or db_item.get("monto", 0))
+                        monto_real = safe_float(db_item.get("monto_neto_pagar") or db_item.get("monto", 0))
                         if abs(monto_sug - monto_real) > 1.00:
                             bajar_a_medio = True
-                            mensajes_veto.append(f"Pago parcial inventado para {doc_sug} (Real BD: {monto_real}, IA sugirió: {monto_sug})")
+                            mensajes_veto.append(f"Pago parcial inventado para {doc_sug}.")
+        except Exception as e:
+            print("Error Veto 3:", e)
 
-            # VETO 4: ANACRONISMO DE FECHAS
+        # VETO 4: ANACRONISMO DE FECHAS
+        try:
             fecha_voucher_dt = parsear_fecha_segura(fecha_pago_origen)
             if fecha_voucher_dt and len(sugeridas) > 0:
                 for fac in sugeridas:
@@ -277,32 +353,31 @@ def lambda_handler(event, context):
                         bajar_a_medio = True
                         mensajes_veto.append(f"Anacronismo detectado contra factura {fac.get('numero_documento')}")
                         break 
-                        
-            # VETO 5: PREVENCIÓN DE DOBLE GASTO
-            if numero_op_origen:
-                num_op_clean = str(numero_op_origen).lstrip("0")
-                dup_resp = table.scan(
-                    FilterExpression="begins_with(PK, :pk) AND SK = :sk AND empresa_emisora_ruc = :ruc",
-                    ExpressionAttributeValues={":pk": "VOUCHER#", ":sk": "METADATA", ":ruc": empresa_emisora_ruc}
-                )
-                for v in dup_resp.get("Items", []):
-                    if v.get("estado") == "RESUELTO":
-                        v_op = _v(v.get("extraccion", {}), "numero_operacion")
-                        if v_op and str(v_op).lstrip("0") == num_op_clean:
-                            bajar_a_medio = True
-                            mensajes_veto.append(f"DOBLE GASTO DETECTADO: Operación {num_op_clean} duplicada.")
-                            break
-
-            # APLICAR EL CASTIGO A LA IA
-            if bajar_a_medio and conciliacion.get("nivel_confianza") == "ALTO":
-                conciliacion["nivel_confianza"] = "MEDIO"
-                motivos_unidos = " y ".join(mensajes_veto)
-                mensaje_final = f"\n\n[SISTEMA INTERNO]: Veto activado. Nivel forzado a MEDIO debido a: {motivos_unidos}."
-                conciliacion["analisis_matematico"] = conciliacion.get("analisis_matematico", "") + mensaje_final
-                print(mensaje_final)
-
         except Exception as e:
-            print("No se pudo ejecutar el veto del sistema:", e)
+            print("Error Veto 4:", e)
+
+        # VETO 5: PREVENCIÓN DE DOBLE GASTO
+        try:
+            if numero_op_origen:
+                num_op_clean = str(numero_op_origen).lstrip("0").strip()
+                if num_op_clean:
+                    dup_resp = table.scan(
+                        FilterExpression="begins_with(PK, :pk) AND SK = :sk AND empresa_emisora_ruc = :ruc AND numero_operacion = :nop AND estado = :est",
+                        ExpressionAttributeValues={":pk": "VOUCHER#", ":sk": "METADATA", ":ruc": empresa_emisora_ruc, ":nop": num_op_clean, ":est": "RESUELTO"}
+                    )
+                    if len(dup_resp.get("Items", [])) > 0:
+                        bajar_a_medio = True
+                        mensajes_veto.append(f"DOBLE GASTO: La Operación N° {num_op_clean} ya fue cobrada previamente.")
+        except Exception as e:
+            print("Error Veto 5:", e)
+
+        # 🚨 EJECUCIÓN FINAL DEL CASTIGO (Ahora fuera de peligro)
+        if bajar_a_medio and conciliacion.get("nivel_confianza") == "ALTO":
+            conciliacion["nivel_confianza"] = "MEDIO"
+            motivos_unidos = " y ".join(mensajes_veto)
+            mensaje_final = f"\n\n[SISTEMA INTERNO]: Veto activado. Nivel forzado a MEDIO debido a: {motivos_unidos}."
+            conciliacion["analisis_matematico"] = conciliacion.get("analisis_matematico", "") + mensaje_final
+            print(mensaje_final)
         
         monto_final = m_origen_float if m_origen_float > 0 else m_sugerido_float
         conciliacion["importe_pagado"] = decimal.Decimal(str(round(monto_final, 2)))
@@ -315,7 +390,7 @@ def lambda_handler(event, context):
             if len(conciliacion["facturas_sugeridas"]) == 1:
                 conciliacion["factura_sugerida"] = conciliacion["facturas_sugeridas"][0]
 
-        save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candidates, archivo_original)
+        save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candidates, archivo_original, extraccion)
         return _ok({"s3_key": s3_key, "empresa_emisora_ruc": empresa_emisora_ruc, "conciliacion": conciliacion})
 
     except Exception as e:

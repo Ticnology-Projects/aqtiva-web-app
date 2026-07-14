@@ -14,16 +14,34 @@ export async function POST(req: Request) {
     }
 
     for (const v of vouchers) {
+      // 🚨 PARCHE: Reconstruir el PK si el frontend no lo envió
+      let voucherPK = v.PK;
+      
+      if (!voucherPK) {
+        if (v.fileName) {
+          voucherPK = `VOUCHER#${v.fileName}`;
+        } else if (v.s3_key) {
+          // Extraemos el nombre base sin carpetas ni extensiones
+          const baseName = v.s3_key.split('/').pop().replace('.json', '').replace('.png', '').replace('.pdf', '').replace('.jpg', '').replace('.jpeg', '');
+          voucherPK = `VOUCHER#${baseName}`;
+        }
+      }
+
+      if (!voucherPK) {
+        console.error("No se pudo determinar el PK para el voucher, se ignora:", v);
+        continue; // Saltamos este registro en vez de crashear la API
+      }
+
       // 1. Borrar de DynamoDB (Voucher)
       await dynamoDb.send(new DeleteCommand({
         TableName: "AqtivaChatDB",
-        Key: { PK: v.PK, SK: "METADATA" }
+        Key: { PK: voucherPK, SK: "METADATA" }
       }));
 
-      // 2. Limpieza Profunda en S3 (Archivos input y output)
+      // 2. Limpieza Profunda en S3 (Archivos input, output y processed)
       if (v.s3_key) {
-        const baseName = v.s3_key.split('/').pop().replace('.json', '').replace('.png', '').replace('.pdf', '');
-        const carpetas = ['input', 'output'];
+        const baseName = v.s3_key.split('/').pop().replace('.json', '').replace('.png', '').replace('.pdf', '').replace('.jpg', '').replace('.jpeg', '');
+        const carpetas = ['input', 'output', 'processed']; 
         const extensiones = ['.json', '.png', '.pdf', '.jpg', '.jpeg'];
 
         for (const dir of carpetas) {
@@ -35,7 +53,7 @@ export async function POST(req: Request) {
           }
         }
 
-        // 3. Limpiar Auditoría (Processed)
+        // 3. Limpiar Auditoría de ese voucher
         const audits = await dynamoDb.send(new ScanCommand({
           TableName: "AqtivaChatDB",
           FilterExpression: "begins_with(PK, :prefix) AND voucher_vinculado = :s3key",
@@ -51,9 +69,9 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ success: true, message: "Archivos e historial eliminados permanentemente de S3 y BD." });
+    return NextResponse.json({ success: true, message: "Archivos y registros eliminados exitosamente." });
   } catch (error: any) {
-    console.error("Error al limpiar bóveda:", error);
-    return NextResponse.json({ error: "Fallo interno al limpiar el sistema." }, { status: 500 });
+    console.error("Error al eliminar vouchers:", error);
+    return NextResponse.json({ error: error.message || "Error interno del servidor." }, { status: 500 });
   }
 }

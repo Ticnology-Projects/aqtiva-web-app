@@ -26,24 +26,32 @@ export const authOptions: NextAuthOptions = {
 
         const user = response.Items?.[0];
 
-        if (!user || user.estado !== "ACTIVO") return null;
-
-        const inputHash = crypto.createHash("sha256").update(credentials.password).digest("hex");
-        
-        if (inputHash === user.passwordHash) {
-          // 🚨 MAGIA MULTI-TENANT: Definimos el paraguas de datos
-          const tenantId = user.rol === "ADMIN" ? user.email : user.usuario_propietario;
-
-          return { 
-            id: user.userId || user.PK, 
-            name: user.nombre, 
-            email: user.email, 
-            rol: user.rol,
-            tenantId: tenantId // Inyectamos la variable
-          } as any;
+        // 🚨 1. Validar que el usuario exista
+        if (!user) {
+          throw new Error("Credenciales incorrectas");
         }
 
-        return null;
+        // 🚨 2. Validar que la contraseña sea correcta ANTES de validar el estado
+        const inputHash = crypto.createHash("sha256").update(credentials.password).digest("hex");
+        if (inputHash !== user.passwordHash) {
+          throw new Error("Credenciales incorrectas");
+        }
+
+        // 🚨 3. Si la contraseña es correcta, verificamos si está inactivo
+        if (user.estado !== "ACTIVO") {
+          throw new Error("INACTIVE_USER");
+        }
+
+        // 🚨 MAGIA MULTI-TENANT: Definimos el paraguas de datos
+        const tenantId = user.rol === "ADMIN" ? user.email : user.usuario_propietario;
+
+        return { 
+          id: user.userId || user.PK, 
+          name: user.nombre, 
+          email: user.email, 
+          rol: user.rol,
+          tenantId: tenantId // Inyectamos la variable
+        } as any;
       }
     })
   ],
@@ -66,7 +74,7 @@ export const authOptions: NextAuthOptions = {
       if (session.user) {
         (session.user as any).id = token.id;
         (session.user as any).rol = token.rol;
-        (session.user as any).tenantId = token.tenantId; // Lo exponemos al frontend
+        (session.user as any).tenantId = token.tenantId; // Se lo pasamos al cliente
       }
       return session;
     }

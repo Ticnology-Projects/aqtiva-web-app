@@ -23,7 +23,12 @@ export default function LoginPage() {
     });
 
     if (result?.error) {
-      setError("Credenciales incorrectas. Verifica tu email y contraseña.");
+      // 🚨 Diferenciamos el error enviado desde nuestro auth.ts
+      if (result.error === "INACTIVE_USER") {
+        setError("Tu cuenta se encuentra inactiva. Por favor, contacta al administrador del sistema para solicitar acceso.");
+      } else {
+        setError("Credenciales incorrectas. Verifica tu email y contraseña.");
+      }
       setLoading(false);
     } else {
       router.push("/"); // Redirigimos al dashboard al tener éxito
@@ -35,12 +40,12 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 border border-gray-100">
         <div className="text-center mb-8">
-          <h2 className="text-3xl font-bold text-gray-900">AQTIVA</h2>
-          <p className="text-sm text-gray-500 mt-2">Acceso al Panel de Control</p>
+          <h2 className="text-3xl font-bold text-gray-900">Iniciar Sesión</h2>
+          <p className="text-gray-500 mt-2">Ingresa a tu panel de control</p>
         </div>
 
         {error && (
-          <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-medium mb-4 text-center">
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm text-center">
             {error}
           </div>
         )}
@@ -73,7 +78,7 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow-sm disabled:opacity-50"
           >
-            {loading ? "Verificando..." : "Iniciar Sesión"}
+            {loading ? "Verificando..." : "Ingresar"}
           </button>
         </form>
       </div>

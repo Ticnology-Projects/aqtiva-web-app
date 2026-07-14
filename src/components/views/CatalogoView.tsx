@@ -54,7 +54,6 @@ export default function CatalogoView() {
   const [filtroEstado, setFiltroEstado] = useState<"TODOS" | "COBRADO" | "PENDIENTE" | "EN REVISIÓN">("TODOS");
   const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
   
-  // 🚨 NUEVO: Estados para el filtro de rango de fechas
   const [fechaInicio, setFechaInicio] = useState("");
   const [fechaFin, setFechaFin] = useState("");
 
@@ -102,6 +101,43 @@ export default function CatalogoView() {
     return emp ? emp.nombreOriginal : "Empresa Desconocida";
   };
 
+  // 🚨 LÓGICA DE FILTRADO BASE
+  const userRucs = new Set(empresas.map(e => e.ruc));
+  const facturasDelUsuario = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
+  const facturasPorEmpresa = facturasDelUsuario.filter(f => !empresaFiltro || f.empresa_emisora_ruc === empresaFiltro);
+
+  const filteredFacturas = facturasPorEmpresa.filter((f) => {
+    if (filtroOrigen === "AUTO_IA" && f.metodo_resolucion !== "AUTOMATICO_IA") return false;
+    if (filtroOrigen === "MANUAL" && f.metodo_resolucion === "AUTOMATICO_IA") return false;
+    
+    const term = searchTerm.toLowerCase();
+    const montoText = String(f.monto || "");
+    const montoNetoText = String(f.monto_neto_pagar || "");
+
+    const matchSearch = !term ||
+      f.numero_documento?.toLowerCase().includes(term) ||
+      f.cliente?.toLowerCase().includes(term) ||
+      f.ruc_cliente?.toLowerCase().includes(term) ||
+      montoText.includes(term) ||
+      montoNetoText.includes(term);
+
+    const matchEstado = filtroEstado === "TODOS" || f.estado === filtroEstado;
+    
+    let matchFecha = true;
+    if (fechaInicio || fechaFin) {
+      const fDate = parseCustomDate(f.fecha_emision);
+      if (fDate > 0) {
+        const start = fechaInicio ? new Date(`${fechaInicio}T00:00:00`).getTime() : 0;
+        const end = fechaFin ? new Date(`${fechaFin}T23:59:59`).getTime() : Infinity;
+        matchFecha = fDate >= start && fDate <= end;
+      } else {
+        matchFecha = false;
+      }
+    }
+
+    return matchSearch && matchEstado && matchFecha;
+  });
+
   const toggleSelectAll = () => {
     if (selectedIds.size === filteredFacturas.length) setSelectedIds(new Set());
     else setSelectedIds(new Set(filteredFacturas.map(f => f.numero_documento)));
@@ -145,9 +181,19 @@ export default function CatalogoView() {
     }
   };
 
+  // 🚨 EXPORTACIÓN INTELIGENTE: Seleccionados -> Filtrados
   const handleExportar = () => {
+    const dataToExport = selectedIds.size > 0 
+      ? filteredFacturas.filter(f => selectedIds.has(f.numero_documento))
+      : filteredFacturas;
+
+    if (dataToExport.length === 0) {
+      alert("No hay facturas para exportar.");
+      return;
+    }
+
     const cabeceras = ["Documento", "RUC Cliente", "Cliente", "Monto", "Moneda", "Fecha Emisión", "Vencimiento", "Estado", "Método Resolucion"];
-    const filas = filteredFacturas.map(f => [
+    const filas = dataToExport.map(f => [
       f.numero_documento,
       f.ruc_cliente,
       f.cliente,
@@ -169,45 +215,6 @@ export default function CatalogoView() {
     link.click();
     document.body.removeChild(link);
   };
-
-  const userRucs = new Set(empresas.map(e => e.ruc));
-  const facturasDelUsuario = facturas.filter(f => userRucs.has(f.empresa_emisora_ruc));
-  const facturasPorEmpresa = facturasDelUsuario.filter(f => !empresaFiltro || f.empresa_emisora_ruc === empresaFiltro);
-
-  const filteredFacturas = facturasPorEmpresa.filter((f) => {
-    if (filtroOrigen === "AUTO_IA" && f.metodo_resolucion !== "AUTOMATICO_IA") return false;
-    if (filtroOrigen === "MANUAL" && f.metodo_resolucion === "AUTOMATICO_IA") return false;
-    
-    // 🚨 MODIFICADO: Búsqueda combinada (Texto o Monto)
-    const term = searchTerm.toLowerCase();
-    const montoText = String(f.monto || "");
-    const montoNetoText = String(f.monto_neto_pagar || "");
-
-    const matchSearch = !term ||
-      f.numero_documento?.toLowerCase().includes(term) ||
-      f.cliente?.toLowerCase().includes(term) ||
-      f.ruc_cliente?.toLowerCase().includes(term) ||
-      montoText.includes(term) ||
-      montoNetoText.includes(term);
-
-    const matchEstado = filtroEstado === "TODOS" || f.estado === filtroEstado;
-    
-    // 🚨 NUEVO: Lógica del Rango de Fechas
-    let matchFecha = true;
-    if (fechaInicio || fechaFin) {
-      const fDate = parseCustomDate(f.fecha_emision);
-      if (fDate > 0) {
-        // Formateamos las fechas al inicio y fin del día para comparación exacta
-        const start = fechaInicio ? new Date(`${fechaInicio}T00:00:00`).getTime() : 0;
-        const end = fechaFin ? new Date(`${fechaFin}T23:59:59`).getTime() : Infinity;
-        matchFecha = fDate >= start && fDate <= end;
-      } else {
-        matchFecha = false; // Si buscamos por fecha y no tiene fecha, lo ocultamos
-      }
-    }
-
-    return matchSearch && matchEstado && matchFecha;
-  });
 
   const cobradoPEN = filteredFacturas.filter(f => f.estado === 'COBRADO' && (f.moneda === 'SOLES' || !f.moneda)).reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
   const cobradoUSD = filteredFacturas.filter(f => f.estado === 'COBRADO' && f.moneda === 'USD').reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
@@ -249,7 +256,6 @@ export default function CatalogoView() {
 
       <div className="mb-6 flex flex-col gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
         
-        {/* FILA 1: Búsqueda, Rango de Fechas y Empresa */}
         <div className="flex flex-col sm:flex-row gap-3 w-full items-center">
           <div className="relative flex-1 w-full">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -264,7 +270,6 @@ export default function CatalogoView() {
             />
           </div>
 
-          {/* 🚨 NUEVO: Rango de Fechas */}
           <div className="flex items-center bg-gray-50 border border-gray-300 rounded-lg px-3 py-2.5 w-full sm:w-auto">
             <input
               type="date"
@@ -304,7 +309,6 @@ export default function CatalogoView() {
           </select>
         </div>
 
-        {/* FILA 2: Botones de Estado, Origen y Acciones */}
         <div className="flex flex-col sm:flex-row gap-3 w-full justify-between items-center flex-wrap">
 
           <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
@@ -322,9 +326,10 @@ export default function CatalogoView() {
           </div>
 
           <div className="flex gap-2 w-full sm:w-auto shrink-0">
+            {/* 🚨 BOTÓN DE EXPORTAR ACTUALIZADO CON CONTADOR */}
             <button onClick={handleExportar} className="flex-1 sm:flex-none bg-indigo-50 border border-indigo-200 text-indigo-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-100 transition-colors shadow-sm flex items-center justify-center gap-2">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-              Exportar CSV
+              Exportar CSV ({selectedIds.size > 0 ? selectedIds.size : filteredFacturas.length})
             </button>
             
             {userRole === 'ADMIN' && selectedIds.size > 0 && (

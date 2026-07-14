@@ -1,86 +1,116 @@
 import { NextResponse } from "next/server";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, ScanCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, ScanCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import crypto from "crypto";
 
-// Inicializamos DynamoDB
 const client = new DynamoDBClient({ region: process.env.AWS_REGION || "us-east-1" });
 const ddbDocClient = DynamoDBDocumentClient.from(client);
 
 // ============================================================================
-// GET: OBTENER TODOS LOS ASISTENTES DE UN ADMIN (TENANT)
+// GET: OBTENER EQUIPO CON CONTADOR DE CONCILIACIONES
 // ============================================================================
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const adminEmail = searchParams.get("tenant_id");
 
-    if (!adminEmail) {
-      return NextResponse.json({ error: "Falta el tenant_id (correo del administrador)" }, { status: 400 });
-    }
+    if (!adminEmail) return NextResponse.json({ error: "Falta el tenant_id" }, { status: 400 });
 
-    // Buscamos a todos los usuarios cuyo "usuario_propietario" sea el ADMIN logueado
-    const command = new ScanCommand({
+    // 1. Obtenemos a los usuarios
+    const scanUsers = await ddbDocClient.send(new ScanCommand({
       TableName: "AqtivaChatDB",
-      FilterExpression: "begins_with(PK, :prefix) AND SK = :sk AND usuario_propietario = :tenantId AND rol = :rol",
+      FilterExpression: "begins_with(PK, :prefix) AND SK = :sk AND usuario_propietario = :tenantId",
       ExpressionAttributeValues: {
         ":prefix": "USER#",
         ":sk": "PROFILE",
-        ":tenantId": adminEmail,
-        ":rol": "USER" // Solo traemos a los asistentes
+        ":tenantId": adminEmail
+      }
+    }));
+
+    // 2. Obtenemos el historial para el contador
+    const scanAudits = await ddbDocClient.send(new ScanCommand({
+      TableName: "AqtivaChatDB",
+      FilterExpression: "begins_with(PK, :prefix) AND (tipo_accion = :c1 OR tipo_accion = :c2)",
+      ExpressionAttributeValues: {
+        ":prefix": "AUDIT#",
+        ":c1": "CONCILIACION",
+        ":c2": "CONCILIACION_LOTE"
+      }
+    }));
+
+    // 3. Cruzamos y sumamos
+    const conteoMap: Record<string, number> = {};
+    scanAudits.Items?.forEach((audit: any) => {
+      const email = audit.usuario_resolutor;
+      if (email && audit.estado === "AUDITADO") {
+        conteoMap[email] = (conteoMap[email] || 0) + 1;
       }
     });
 
-    const response = await ddbDocClient.send(command);
-
-    // Mapeamos los datos para enviarlos limpios al frontend (sin el hash de la contraseña)
-    const equipo = (response.Items || []).map((user) => ({
-      id: user.PK.replace("USER#", ""),
-      nombre: user.nombre,
-      email: user.email,
-      fecha_creacion: user.fechaCreacion ? new Date(user.fechaCreacion).toLocaleDateString('es-PE') : "N/A",
-      rol: user.rol,
-      estado: user.estado
+    const equipoConteo = (scanUsers.Items || []).map(usuario => ({
+      ...usuario,
+      conteo_conciliaciones: conteoMap[usuario.email] || 0
     }));
 
-    return NextResponse.json({ success: true, data: equipo });
-
+    return NextResponse.json({ success: true, data: equipoConteo });
   } catch (error: any) {
-    console.error("Error obteniendo el equipo:", error);
-    return NextResponse.json({ error: "Error interno al cargar los asistentes." }, { status: 500 });
+    console.error("Error obteniendo equipo:", error);
+    return NextResponse.json({ error: "Error interno al obtener el equipo." }, { status: 500 });
   }
 }
 
 // ============================================================================
-// POST: CREAR UN NUEVO ASISTENTE (USER) VINCULADO AL ADMIN
+// PUT: ACTUALIZAR ESTADO (ACTIVO/INACTIVO)
+// ============================================================================
+export async function PUT(req: Request) {
+  try {
+    const { email, estado } = await req.json();
+    
+    if (!email || !estado) {
+      return NextResponse.json({ error: "El email y el estado son requeridos." }, { status: 400 });
+    }
+
+    await ddbDocClient.send(new UpdateCommand({
+      TableName: "AqtivaChatDB",
+      Key: { PK: `USER#${email}`, SK: "PROFILE" },
+      UpdateExpression: "SET estado = :nuevoEstado",
+      ExpressionAttributeValues: { ":nuevoEstado": estado }
+    }));
+
+    return NextResponse.json({ success: true, message: `Usuario marcado como ${estado}.` });
+  } catch (error: any) {
+    console.error("Error actualizando estado:", error);
+    return NextResponse.json({ error: "Error interno al actualizar estado." }, { status: 500 });
+  }
+}
+
+// ============================================================================
+// POST: CREAR USUARIO
 // ============================================================================
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { nombre, email, password, tenant_id, rol } = body;
+    const { email, password, nombre, rol, adminEmail } = await req.json();
 
-    if (!nombre || !email || !password || !tenant_id) {
-      return NextResponse.json({ error: "Faltan parámetros obligatorios." }, { status: 400 });
+    if (!email || !password || !nombre || !adminEmail) {
+      return NextResponse.json({ error: "Todos los campos son requeridos." }, { status: 400 });
     }
 
-    // Hasheamos la contraseña con SHA-256 (mismo formato que usa tu BD actual)
-    const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
-    const userEmailClean = email.toLowerCase().trim();
+    const passwordHash = crypto.createHash("sha256").update(password).digest("hex");
+    const timestamp = new Date().toISOString();
 
     await ddbDocClient.send(new PutCommand({
       TableName: "AqtivaChatDB",
       Item: {
-        PK: `USER#${userEmailClean}`, // Su ID principal será su correo
+        PK: `USER#${email}`,
         SK: "PROFILE",
+        email: email,
         nombre: nombre,
-        email: userEmailClean,
         passwordHash: passwordHash,
-        rol: rol || "USER", // Forzamos a que sea "USER" por seguridad
-        usuario_propietario: tenant_id, // 🚨 SELLO DEL TENANT (Dueño de la cuenta)
+        rol: rol || "USER",
         estado: "ACTIVO",
-        fechaCreacion: new Date().toISOString()
+        usuario_propietario: adminEmail,
+        fecha_creacion: timestamp
       },
-      // Evitamos sobreescribir un usuario si ya existe
       ConditionExpression: "attribute_not_exists(PK)" 
     }));
 
@@ -88,15 +118,14 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     if (error.name === "ConditionalCheckFailedException") {
-      return NextResponse.json({ error: "Ya existe un usuario registrado con este correo." }, { status: 409 });
+      return NextResponse.json({ error: "Ya existe un usuario con este correo." }, { status: 409 });
     }
-    console.error("Error creando asistente:", error);
     return NextResponse.json({ error: "Error interno al crear el usuario." }, { status: 500 });
   }
 }
 
 // ============================================================================
-// DELETE: REVOCAR/ELIMINAR A UN ASISTENTE
+// DELETE: ELIMINAR PERMANENTEMENTE
 // ============================================================================
 export async function DELETE(req: Request) {
   try {
@@ -104,21 +133,16 @@ export async function DELETE(req: Request) {
     const emailToDelete = searchParams.get("email");
 
     if (!emailToDelete) {
-      return NextResponse.json({ error: "Se requiere el correo del asistente para eliminarlo." }, { status: 400 });
+      return NextResponse.json({ error: "Se requiere el correo." }, { status: 400 });
     }
 
     await ddbDocClient.send(new DeleteCommand({
       TableName: "AqtivaChatDB",
-      Key: {
-        PK: `USER#${emailToDelete}`,
-        SK: "PROFILE"
-      }
+      Key: { PK: `USER#${emailToDelete}`, SK: "PROFILE" }
     }));
 
-    return NextResponse.json({ success: true, message: "Acceso revocado exitosamente." });
-
+    return NextResponse.json({ success: true, message: "Acceso revocado." });
   } catch (error: any) {
-    console.error("Error eliminando asistente:", error);
-    return NextResponse.json({ error: "Error interno al eliminar el usuario." }, { status: 500 });
+    return NextResponse.json({ error: "Error eliminando usuario." }, { status: 500 });
   }
 }

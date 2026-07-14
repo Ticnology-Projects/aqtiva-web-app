@@ -2,25 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
+import { Download, Calendar } from "lucide-react";
 import ResolucionModal from "../modals/ResolucionModal";
-
-const getSugerenciaInfo = (conciliacion: any) => {
-  if (!conciliacion) return { cliente: 'No detectado', doc: '---' };
-  
-  if (conciliacion.tipo_conciliacion === 'LOTE' && conciliacion.facturas_sugeridas?.length > 1) {
-    const clientes = [...new Set(conciliacion.facturas_sugeridas.map((f: any) => f.cliente))];
-    return {
-      cliente: clientes.join(", ") || 'Múltiples clientes',
-      doc: `Lote de ${conciliacion.facturas_sugeridas.length} facturas`
-    };
-  }
-
-  const sug = conciliacion.factura_sugerida || conciliacion.facturas_sugeridas?.[0];
-  return {
-    cliente: sug?.cliente || 'No detectado',
-    doc: sug?.numero_documento || '---'
-  };
-};
 
 export default function TriajeView() {
   const { data: session } = useSession();
@@ -29,10 +12,11 @@ export default function TriajeView() {
   const [empresas, setEmpresas] = useState<any[]>([]);
   const [selectedVoucher, setSelectedVoucher] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Estados de Selección Múltiple y Filtros
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
-
   const [searchTerm, setSearchTerm] = useState("");
   const [fechaInicio, setFechaInicio] = useState("");
   const [fechaFin, setFechaFin] = useState("");
@@ -61,7 +45,6 @@ export default function TriajeView() {
           const userRucs = new Set(misEmpresas.map(e => e.ruc));
           const misVouchers = vouchersData.data.filter((v: any) => userRucs.has(v.empresa_emisora_ruc));
 
-          // 🚨 CORREGIDO: Usando fecha_importacion
           const sortedVouchers = misVouchers.sort((a: any, b: any) => {
             const timeA = a.fecha_importacion ? new Date(a.fecha_importacion).getTime() : 0;
             const timeB = b.fecha_importacion ? new Date(b.fecha_importacion).getTime() : 0;
@@ -85,28 +68,34 @@ export default function TriajeView() {
     return emp ? emp.nombreOriginal : "Empresa Desconocida";
   };
 
+  // 🚨 LÓGICA DE FILTRADO MEJORADA (Texto + Fecha y Hora exacta)
   const filteredVouchers = vouchers.filter((v) => {
     const term = searchTerm.toLowerCase();
     const importeStr = String(v.conciliacion?.importe_pagado || "");
-    const sugInfo = getSugerenciaInfo(v.conciliacion);
-    const clienteSugerido = sugInfo.cliente.toLowerCase();
-    const docSugerido = sugInfo.doc.toLowerCase();
+    const fechaStr = v.fecha_importacion ? new Date(v.fecha_importacion).toLocaleString('es-PE').toLowerCase() : "";
 
+    // Búsqueda de texto inclusiva (ahora también busca por la fecha visual, ej: "14:30")
     const matchSearch = !term ||
       v.fileName?.toLowerCase().includes(term) ||
       v.empresa_emisora_ruc?.toLowerCase().includes(term) ||
       getEmpresaNombre(v.empresa_emisora_ruc).toLowerCase().includes(term) ||
       importeStr.includes(term) ||
-      clienteSugerido.includes(term) ||
-      docSugerido.includes(term);
+      fechaStr.includes(term);
 
+    // Filtro Exacto por Fecha y Hora (incluyendo los segundos)
     let matchFecha = true;
     if (fechaInicio || fechaFin) {
-      // 🚨 CORREGIDO: Usando fecha_importacion
       const vDate = v.fecha_importacion ? new Date(v.fecha_importacion).getTime() : 0;
       if (vDate > 0) {
-        const start = fechaInicio ? new Date(`${fechaInicio}T00:00:00`).getTime() : 0;
-        const end = fechaFin ? new Date(`${fechaFin}T23:59:59`).getTime() : Infinity;
+        const start = fechaInicio ? new Date(fechaInicio).getTime() : 0;
+        let end = Infinity;
+        
+        if (fechaFin) {
+          const d = new Date(fechaFin);
+          d.setSeconds(59, 999); // Abarcar hasta el final del minuto
+          end = d.getTime();
+        }
+        
         matchFecha = vDate >= start && vDate <= end;
       } else {
         matchFecha = false; 
@@ -117,7 +106,6 @@ export default function TriajeView() {
   });
 
   filteredVouchers.sort((a, b) => {
-    // 🚨 CORREGIDO: Usando fecha_importacion
     const timeA = a.fecha_importacion ? new Date(a.fecha_importacion).getTime() : 0;
     const timeB = b.fecha_importacion ? new Date(b.fecha_importacion).getTime() : 0;
     return sortOrder === "DESC" ? timeB - timeA : timeA - timeB;
@@ -133,6 +121,38 @@ export default function TriajeView() {
     if (newSet.has(id)) newSet.delete(id);
     else newSet.add(id);
     setSelectedIds(newSet);
+  };
+
+  const handleExportar = () => {
+    const dataToExport = selectedIds.size > 0 
+      ? filteredVouchers.filter(v => selectedIds.has(v.s3_key))
+      : filteredVouchers;
+
+    if (dataToExport.length === 0) {
+      alert("No hay vouchers para exportar.");
+      return;
+    }
+
+    const cabeceras = ["Fecha Ingreso", "Voucher (Archivo)", "Empresa Destino", "RUC Destino", "Monto Extraído", "Moneda", "Confianza IA"];
+    const filas = dataToExport.map(v => [
+      v.fecha_importacion ? new Date(v.fecha_importacion).toLocaleString('es-PE') : 'Sin fecha',
+      v.fileName,
+      getEmpresaNombre(v.empresa_emisora_ruc),
+      v.empresa_emisora_ruc,
+      Number(v.conciliacion?.importe_pagado || 0).toFixed(2),
+      v.conciliacion?.moneda || "PEN",
+      v.conciliacion?.nivel_confianza === "MEDIO" ? "AMBIGUO" : (v.conciliacion?.nivel_confianza || "NO MATCH")
+    ]);
+
+    const contenidoCSV = [cabeceras.join(";"), ...filas.map(fila => fila.join(";"))].join("\n");
+    const blob = new Blob([contenidoCSV], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `Bandeja_Triaje_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleDelete = async (vouchersAEliminar: any[]) => {
@@ -175,7 +195,10 @@ export default function TriajeView() {
           facturas: payloadConfirmacion.facturas,
           s3_key_voucher: selectedVoucher.s3_key,
           PK_Voucher: selectedVoucher.PK,
-          es_automatico: false
+          es_automatico: false,
+          // 🚨 Se envían los datos de trazabilidad
+          usuario_resolutor: session?.user?.email || "Usuario Desconocido",
+          historial_previo: selectedVoucher.historial_trazabilidad || []
         })
       });
 
@@ -207,51 +230,58 @@ export default function TriajeView() {
               {isDeleting ? "Descartando..." : `Descartar (${selectedIds.size})`}
             </button>
           )}
+          
           <button onClick={fetchData} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-50 shadow-sm transition-colors flex items-center gap-2">
             Actualizar Bandeja
+          </button>
+
+          <button onClick={handleExportar} className="bg-indigo-50 border border-indigo-200 text-indigo-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-100 transition-colors shadow-sm flex items-center gap-2">
+            <Download className="w-4 h-4" />
+            Exportar CSV ({selectedIds.size > 0 ? selectedIds.size : filteredVouchers.length})
           </button>
         </div>
       </div>
 
-      <div className="mb-6 flex flex-col sm:flex-row gap-3 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-center">
-        <div className="relative flex-1 w-full">
+      <div className="mb-6 flex flex-col sm:flex-row gap-3 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-center flex-wrap">
+        <div className="relative flex-1 min-w-[250px]">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
           </div>
           <input
             type="text"
-            placeholder="Buscar por documento, sugerencia IA, monto (Ej. 150.00)..."
+            placeholder="Buscar por hora, documento, empresa o monto (Ej. 150.00)..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg bg-gray-50 focus:bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-colors"
           />
         </div>
 
-        <div className="flex items-center bg-gray-50 border border-gray-300 rounded-lg px-3 py-2.5 w-full sm:w-auto">
-          <input
-            type="date"
-            value={fechaInicio}
-            onChange={(e) => setFechaInicio(e.target.value)}
-            title="Fecha Inicial"
-            className="bg-transparent text-sm outline-none text-gray-600 w-full sm:w-[130px]"
-          />
-          <span className="text-gray-400 mx-2">a</span>
-          <input
-            type="date"
-            value={fechaFin}
-            onChange={(e) => setFechaFin(e.target.value)}
-            title="Fecha Final"
-            className="bg-transparent text-sm outline-none text-gray-600 w-full sm:w-[130px]"
-          />
-          {(fechaInicio || fechaFin) && (
-            <button 
-              onClick={() => { setFechaInicio(""); setFechaFin(""); }}
-              className="ml-2 text-gray-400 hover:text-red-500 transition-colors"
-              title="Limpiar fechas"
-            >
-              ✕
-            </button>
-          )}
+        {/* 🚨 INPUTS DE HORA (DATETIME-LOCAL) */}
+        <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 w-full sm:w-auto self-start">
+            <Calendar className="w-4 h-4 text-gray-400" />
+            <span className="text-sm text-gray-500 font-medium ml-1">Rango:</span>
+            <input 
+                type="datetime-local" 
+                value={fechaInicio}
+                onChange={(e) => setFechaInicio(e.target.value)} 
+                className="bg-white border border-gray-300 rounded px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-auto"
+            />
+            <span className="text-gray-400 mx-1">a</span>
+            <input 
+                type="datetime-local" 
+                value={fechaFin}
+                onChange={(e) => setFechaFin(e.target.value)} 
+                className="bg-white border border-gray-300 rounded px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-auto"
+            />
+            {(fechaInicio || fechaFin) && (
+              <button 
+                onClick={() => { setFechaInicio(""); setFechaFin(""); }}
+                className="ml-2 text-gray-400 hover:text-red-500 transition-colors"
+                title="Limpiar fechas"
+              >
+                ✕
+              </button>
+            )}
         </div>
 
         <select
@@ -284,26 +314,25 @@ export default function TriajeView() {
                 )}
                 <th className="p-4 font-semibold uppercase tracking-wider text-xs">Voucher Depositado</th>
                 <th className="p-4 font-semibold uppercase tracking-wider text-xs">Empresa (Cuenta Destino)</th>
-                <th className="p-4 font-semibold uppercase tracking-wider text-xs">Sugerencia IA (Cliente y Doc)</th>
                 <th className="p-4 font-semibold uppercase tracking-wider text-xs text-center">Confianza IA</th>
                 <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Acción</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredVouchers.map(v => {
-                const sugInfo = getSugerenciaInfo(v.conciliacion);
-                
+                const isSelected = selectedIds.has(v.s3_key);
                 return (
-                  <tr key={v.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(v.s3_key) ? 'bg-indigo-50/30' : ''}`}>
+                  <tr key={v.PK} className={`hover:bg-gray-50 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
+                    
                     {userRole === 'ADMIN' && (
                       <td className="p-4 text-center">
-                        <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(v.s3_key)} onChange={() => toggleSelectOne(v.s3_key)} />
+                        <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={isSelected} onChange={() => toggleSelectOne(v.s3_key)} />
                       </td>
                     )}
+
                     <td className="p-4">
                       <p className="font-bold text-gray-800 text-xs truncate max-w-[180px]" title={v.fileName}>{v.fileName}</p>
                       <p className="text-[10px] text-gray-500 font-mono mt-0.5">Monto: {v.conciliacion?.moneda === 'USD' ? '$' : 'S/'} {Number(v.conciliacion?.importe_pagado || 0).toFixed(2)}</p>
-                      {/* 🚨 CORREGIDO: Usando fecha_importacion para mostrar en la interfaz */}
                       <p className="text-[10px] text-gray-400 mt-0.5">
                         {v.fecha_importacion ? new Date(v.fecha_importacion).toLocaleString('es-PE') : 'Sin fecha'}
                       </p>
@@ -311,12 +340,6 @@ export default function TriajeView() {
                     <td className="p-4">
                       <p className="font-bold text-gray-800 text-xs truncate max-w-[150px] uppercase" title={getEmpresaNombre(v.empresa_emisora_ruc)}>{getEmpresaNombre(v.empresa_emisora_ruc)}</p>
                       <p className="text-[10px] text-gray-500 font-mono mt-0.5">RUC: {v.empresa_emisora_ruc}</p>
-                    </td>
-                    <td className="p-4">
-                      <div className="bg-gray-50 border border-gray-100 p-2 rounded-lg">
-                        <p className="font-bold text-indigo-700 text-xs truncate max-w-[180px]" title={sugInfo.cliente}>{sugInfo.cliente}</p>
-                        <p className="text-[10px] text-gray-500 font-mono mt-0.5">Documento: {sugInfo.doc}</p>
-                      </div>
                     </td>
                     <td className="p-4 text-center">
                       <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold tracking-widest ${v.conciliacion?.nivel_confianza === "ALTO" ? "bg-green-100 text-green-800" : ["AMBIGUO", "MEDIO"].includes(v.conciliacion?.nivel_confianza) ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>

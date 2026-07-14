@@ -155,7 +155,6 @@ def parsear_fecha_segura(fecha_str):
     except: return None
     return None
 
-# 🚨 NUEVA FUNCIÓN: Conversión matemática segura
 def safe_float(val):
     if not val: return 0.0
     try:
@@ -165,10 +164,12 @@ def safe_float(val):
         return 0.0
 
 def evaluate(ext: dict, candidates: list[dict], diccionario_str: str) -> dict:
+    # 🚨 AQUÍ ESTÁ LA SOLUCIÓN: Agregamos entidad_destino al JSON que lee la IA
     extracted_summary = json.dumps({
         "numero_documento":  _v(ext, "numero_documento"),
         "numero_operacion":  _v(ext, "numero_operacion"),
         "entidad_origen":    _v(ext, "emisor", "nombre"),
+        "entidad_destino":   _v(ext, "receptor", "nombre"),
         "importe_pagado":    _v(ext, "importe_total") or _v(ext, "monto_pendiente"),
         "moneda":            _v(ext, "moneda"),
         "fecha_pago":        _v(ext, "fecha_pago") or _v(ext, "fecha_emision"),
@@ -197,19 +198,24 @@ Sigue este orden lógico de evaluación OBLIGATORIAMENTE:
    - Revisa todas las facturas. Si alguna indica "Sujeto a Detracción", calcula su neto: Neto = Bruto - (Bruto * Tasa).
    - SOLO usa los 'Montos Netos' para comparar.
 
-2. BÚSQUEDA MATEMÁTICA (1 a 1 y LOTES):
+2. REGLA DE IDENTIDAD Y COMPROBANTES ANÓNIMOS:
+   - Verifica el <diccionario_clientes_oficial> usando TANTO la "entidad_origen" COMO la "entidad_destino" del comprobante_escaneado.
+   - EXCEPCIÓN CRÍTICA: Si el comprobante es ANÓNIMO (las entidades son "null" o genéricas), PERO existe UNA ÚNICA coincidencia matemática exacta en el catálogo, DEBES auto-conciliarla. LA MATEMÁTICA EXACTA ES LA PRUEBA DEFINITIVA y reemplaza la identidad.
+
+3. BÚSQUEDA MATEMÁTICA (1 a 1 y LOTES):
    - ¿Hay alguna factura o SUMA de facturas de un mismo cliente cuyo Monto Neto dé EXACTAMENTE el monto del comprobante?
 
-3. REGLA DE TOLERANCIA CERO - PROHIBIDO FRACCIONAR:
+4. REGLA DE TOLERANCIA CERO - PROHIBIDO FRACCIONAR:
    - El "monto_neto_aplicado" sugerido DEBE SER el 100% del "Monto Neto a Pagar" original. Nunca modifiques el monto para forzar un cuadre.
 
-4. REGLA DE TOLERANCIA CERO - FACTURAS COBRADAS (¡NUEVO Y CRÍTICO!):
-   - Queda ESTRICTAMENTE PROHIBIDO seleccionar o sugerir una factura que tenga "Estado: COBRADO".
-   - Una factura "COBRADA" significa que otro cliente ya la pagó en el pasado. Si la seleccionas, estarás duplicando un pago y cometiendo fraude. 
-   - SOLO puedes conciliar facturas con "Estado: PENDIENTE". Si la única coincidencia matemática ya está COBRADA, debes devolver "nivel_confianza": "SIN_MATCH".
+5. REGLA DE TOLERANCIA CERO - FACTURAS COBRADAS:
+   - Queda ESTRICTAMENTE PROHIBIDO sugerir una factura con "Estado: COBRADO". Solo puedes conciliar con facturas "PENDIENTE".
 
-5. REGLA DE TOLERANCIA CERO - CRONOLOGÍA Y MATEMÁTICA:
-   - Si la fecha del comprobante es ANTERIOR a la Fecha de Emisión, el nivel_confianza DEBE SER "MEDIO".
+6. REGLA DE TOLERANCIA CERO - CRONOLOGÍA (EMISIÓN VS VENCIMIENTO):
+   - Es IMPOSIBLE pagar una factura antes de su "Fecha Emisión". Si ocurre, el nivel_confianza DEBE SER "MEDIO".
+   - Es PERFECTAMENTE NORMAL Y VÁLIDO que un cliente pague después de la "Fecha Vencimiento" (pago atrasado). NUNCA rechaces, penalices, ni bajes la confianza de una conciliación porque se pagó fuera de plazo.
+
+7. REGLA DE TOLERANCIA CERO - DISCREPANCIA MATEMÁTICA:
    - Si la diferencia matemática entre el comprobante y la(s) factura(s) es mayor a 1.00, el nivel_confianza DEBE SER "MEDIO".
 </instrucciones>
 
@@ -248,7 +254,6 @@ def save_voucher_and_audit(file_name, empresa_emisora_ruc, conciliacion, candida
     
     timestamp = datetime.utcnow().isoformat() + "Z"
     
-    # 🚨 NUEVO: Guardamos el numero_operacion en la raíz de la BD para que el escáner lo vea
     item_voucher = {
         "PK": f"VOUCHER#{file_name}", "SK": "METADATA", "fileName": file_name, "s3_key": processed_s3_key,
         "empresa_emisora_ruc": empresa_emisora_ruc, "estado": "PENDIENTE_REVISION",
@@ -287,9 +292,11 @@ def lambda_handler(event, context):
         if not candidates:
             query = build_query(extraccion, empresa_emisora_ruc)
             candidates = retrieve_kb(query, empresa_emisora_ruc)
+            
+        candidates = [c for c in candidates if "Estado: PENDIENTE" in c["contenido"]]
         
         if not candidates:
-            conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "analisis_matematico": "No se encontraron facturas."}
+            conc_vacia = {"tipo_conciliacion": "NINGUNA", "facturas_sugeridas": [], "nivel_confianza": "SIN_MATCH", "score_kb": 0, "campos_coincidentes": [], "campos_discrepantes": [], "analisis_matematico": "No se encontraron facturas PENDIENTES."}
             save_voucher_and_audit(file_name, empresa_emisora_ruc, conc_vacia, [], archivo_original, extraccion)
             return _ok({"s3_key": s3_key, "empresa_emisora_ruc": empresa_emisora_ruc, "conciliacion": conc_vacia})
 
@@ -299,7 +306,6 @@ def lambda_handler(event, context):
         fecha_pago_origen = _v(extraccion, "fecha_pago") or _v(extraccion, "fecha_emision")
         numero_op_origen = _v(extraccion, "numero_operacion")
 
-        # 🚨 VETOS DE SEGURIDAD AISLADOS PARA QUE NO CRASHEEN 🚨
         mensajes_veto = []
         bajar_a_medio = False
         m_origen_float = safe_float(monto_origen)
@@ -309,17 +315,14 @@ def lambda_handler(event, context):
         for fac in sugeridas:
             m_sugerido_float += safe_float(fac.get("monto_neto_aplicado", fac.get("monto_total", 0)))
 
-        # VETO 1: OCR CIEGO
         if m_origen_float == 0.0:
             bajar_a_medio = True
             mensajes_veto.append("El OCR no detectó el monto original del voucher.")
         
-        # VETO 2: MATEMÁTICA PURA
         elif m_sugerido_float > 0 and abs(m_origen_float - m_sugerido_float) > 1.00:
             bajar_a_medio = True
             mensajes_veto.append(f"Discrepancia matemática de {abs(m_origen_float - m_sugerido_float):.2f}")
 
-        # VETO 3: INTEGRIDAD DE DB EN TIEMPO REAL (FANTASMAS)
         try:
             if len(sugeridas) > 0:
                 for fac in sugeridas:
@@ -343,7 +346,6 @@ def lambda_handler(event, context):
         except Exception as e:
             print("Error Veto 3:", e)
 
-        # VETO 4: ANACRONISMO DE FECHAS
         try:
             fecha_voucher_dt = parsear_fecha_segura(fecha_pago_origen)
             if fecha_voucher_dt and len(sugeridas) > 0:
@@ -356,7 +358,6 @@ def lambda_handler(event, context):
         except Exception as e:
             print("Error Veto 4:", e)
 
-        # VETO 5: PREVENCIÓN DE DOBLE GASTO
         try:
             if numero_op_origen:
                 num_op_clean = str(numero_op_origen).lstrip("0").strip()
@@ -371,7 +372,6 @@ def lambda_handler(event, context):
         except Exception as e:
             print("Error Veto 5:", e)
 
-        # 🚨 EJECUCIÓN FINAL DEL CASTIGO (Ahora fuera de peligro)
         if bajar_a_medio and conciliacion.get("nivel_confianza") == "ALTO":
             conciliacion["nivel_confianza"] = "MEDIO"
             motivos_unidos = " y ".join(mensajes_veto)

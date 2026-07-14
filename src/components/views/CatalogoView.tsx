@@ -49,10 +49,14 @@ export default function CatalogoView() {
   const [empresas, setEmpresas] = useState<any[]>([]);
   const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  
   const [searchTerm, setSearchTerm] = useState("");
   const [filtroEstado, setFiltroEstado] = useState<"TODOS" | "COBRADO" | "PENDIENTE" | "EN REVISIÓN">("TODOS");
-
   const [filtroOrigen, setFiltroOrigen] = useState<"TODOS" | "AUTO_IA" | "MANUAL">("TODOS");
+  
+  // 🚨 NUEVO: Estados para el filtro de rango de fechas
+  const [fechaInicio, setFechaInicio] = useState("");
+  const [fechaFin, setFechaFin] = useState("");
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
@@ -60,14 +64,12 @@ export default function CatalogoView() {
 
   const [isFacturaModalOpen, setIsFacturaModalOpen] = useState(false);
 
-  // 🚨 REGLAS MULTI-TENANT Y RBAC
   const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
   const userRole = (session?.user as any)?.rol || 'USER';
 
   const fetchFacturas = () => {
     if (!tenantId) return;
     setIsLoading(true);
-    // 🚨 Búsqueda aislada al Tenant
     fetch(`/api/facturas?tenantId=${encodeURIComponent(tenantId)}`)
       .then((res) => res.json())
       .then((data) => {
@@ -83,7 +85,6 @@ export default function CatalogoView() {
 
   useEffect(() => {
     if (!tenantId) return;
-    // 🚨 Empresas del Tenant
     fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`)
       .then(res => res.json())
       .then(data => { if (data.success) setEmpresas(data.data); })
@@ -177,14 +178,35 @@ export default function CatalogoView() {
     if (filtroOrigen === "AUTO_IA" && f.metodo_resolucion !== "AUTOMATICO_IA") return false;
     if (filtroOrigen === "MANUAL" && f.metodo_resolucion === "AUTOMATICO_IA") return false;
     
+    // 🚨 MODIFICADO: Búsqueda combinada (Texto o Monto)
     const term = searchTerm.toLowerCase();
+    const montoText = String(f.monto || "");
+    const montoNetoText = String(f.monto_neto_pagar || "");
+
     const matchSearch = !term ||
       f.numero_documento?.toLowerCase().includes(term) ||
       f.cliente?.toLowerCase().includes(term) ||
-      f.ruc_cliente?.toLowerCase().includes(term);
+      f.ruc_cliente?.toLowerCase().includes(term) ||
+      montoText.includes(term) ||
+      montoNetoText.includes(term);
 
     const matchEstado = filtroEstado === "TODOS" || f.estado === filtroEstado;
-    return matchSearch && matchEstado;
+    
+    // 🚨 NUEVO: Lógica del Rango de Fechas
+    let matchFecha = true;
+    if (fechaInicio || fechaFin) {
+      const fDate = parseCustomDate(f.fecha_emision);
+      if (fDate > 0) {
+        // Formateamos las fechas al inicio y fin del día para comparación exacta
+        const start = fechaInicio ? new Date(`${fechaInicio}T00:00:00`).getTime() : 0;
+        const end = fechaFin ? new Date(`${fechaFin}T23:59:59`).getTime() : Infinity;
+        matchFecha = fDate >= start && fDate <= end;
+      } else {
+        matchFecha = false; // Si buscamos por fecha y no tiene fecha, lo ocultamos
+      }
+    }
+
+    return matchSearch && matchEstado && matchFecha;
   });
 
   const cobradoPEN = filteredFacturas.filter(f => f.estado === 'COBRADO' && (f.moneda === 'SOLES' || !f.moneda)).reduce((acc, curr) => acc + Number(curr.monto || 0), 0);
@@ -225,25 +247,55 @@ export default function CatalogoView() {
         </div>
       </div>
 
-      <div className="mb-6 flex flex-col xl:flex-row gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-start xl:items-center">
-
-        <div className="flex flex-col sm:flex-row gap-3 w-full xl:flex-1">
+      <div className="mb-6 flex flex-col gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+        
+        {/* FILA 1: Búsqueda, Rango de Fechas y Empresa */}
+        <div className="flex flex-col sm:flex-row gap-3 w-full items-center">
           <div className="relative flex-1 w-full">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
             </div>
             <input
               type="text"
-              placeholder="Buscar por documento, cliente o RUC..."
+              placeholder="Buscar por documento, cliente, RUC o Monto (Ej. 150.00)..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg bg-gray-50 focus:bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-colors"
             />
           </div>
+
+          {/* 🚨 NUEVO: Rango de Fechas */}
+          <div className="flex items-center bg-gray-50 border border-gray-300 rounded-lg px-3 py-2.5 w-full sm:w-auto">
+            <input
+              type="date"
+              value={fechaInicio}
+              onChange={(e) => setFechaInicio(e.target.value)}
+              title="Fecha Inicial"
+              className="bg-transparent text-sm outline-none text-gray-600 w-full sm:w-[130px]"
+            />
+            <span className="text-gray-400 mx-2">a</span>
+            <input
+              type="date"
+              value={fechaFin}
+              onChange={(e) => setFechaFin(e.target.value)}
+              title="Fecha Final"
+              className="bg-transparent text-sm outline-none text-gray-600 w-full sm:w-[130px]"
+            />
+            {(fechaInicio || fechaFin) && (
+              <button 
+                onClick={() => { setFechaInicio(""); setFechaFin(""); }}
+                className="ml-2 text-gray-400 hover:text-red-500 transition-colors"
+                title="Limpiar fechas"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
           <select
             value={empresaFiltro}
             onChange={(e) => setEmpresaFiltro(e.target.value)}
-            className="border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[220px] bg-white font-medium text-gray-700"
+            className="border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none w-full sm:w-[220px] bg-white font-medium text-gray-700"
           >
             <option value="">Todas las empresas</option>
             {empresas.map(emp => (
@@ -252,18 +304,21 @@ export default function CatalogoView() {
           </select>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto justify-end items-center flex-wrap">
+        {/* FILA 2: Botones de Estado, Origen y Acciones */}
+        <div className="flex flex-col sm:flex-row gap-3 w-full justify-between items-center flex-wrap">
 
-          <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
-            <button onClick={() => setFiltroOrigen("TODOS")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex-1 sm:flex-none ${filtroOrigen === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
-            <button onClick={() => setFiltroOrigen("AUTO_IA")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "AUTO_IA" ? "bg-indigo-100 text-indigo-700 shadow-sm" : "text-gray-500 hover:text-indigo-600"}`}>🤖 Auto IA</button>
-            <button onClick={() => setFiltroOrigen("MANUAL")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "MANUAL" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>👤 Manual</button>
-          </div>
+          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+            <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
+              <button onClick={() => setFiltroOrigen("TODOS")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex-1 sm:flex-none ${filtroOrigen === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
+              <button onClick={() => setFiltroOrigen("AUTO_IA")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "AUTO_IA" ? "bg-indigo-100 text-indigo-700 shadow-sm" : "text-gray-500 hover:text-indigo-600"}`}>🤖 Auto IA</button>
+              <button onClick={() => setFiltroOrigen("MANUAL")} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 flex-1 sm:flex-none ${filtroOrigen === "MANUAL" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>👤 Manual</button>
+            </div>
 
-          <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
-            <button onClick={() => setFiltroEstado("TODOS")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
-            <button onClick={() => setFiltroEstado("PENDIENTE")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "PENDIENTE" ? "bg-white shadow-sm text-amber-600" : "text-gray-500 hover:text-amber-600"}`}>Pendientes</button>
-            <button onClick={() => setFiltroEstado("COBRADO")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "COBRADO" ? "bg-white shadow-sm text-green-600" : "text-gray-500 hover:text-green-600"}`}>Cobrados</button>
+            <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto shrink-0">
+              <button onClick={() => setFiltroEstado("TODOS")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "TODOS" ? "bg-white shadow-sm text-gray-800" : "text-gray-500"}`}>Todos</button>
+              <button onClick={() => setFiltroEstado("PENDIENTE")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "PENDIENTE" ? "bg-white shadow-sm text-amber-600" : "text-gray-500 hover:text-amber-600"}`}>Pendientes</button>
+              <button onClick={() => setFiltroEstado("COBRADO")} className={`px-4 py-1.5 rounded-md text-sm font-bold flex-1 sm:flex-none ${filtroEstado === "COBRADO" ? "bg-white shadow-sm text-green-600" : "text-gray-500 hover:text-green-600"}`}>Cobrados</button>
+            </div>
           </div>
 
           <div className="flex gap-2 w-full sm:w-auto shrink-0">
@@ -272,7 +327,6 @@ export default function CatalogoView() {
               Exportar CSV
             </button>
             
-            {/* 🚨 REGLA RBAC: Botón de Borrado Masivo Exclusivo para ADMIN */}
             {userRole === 'ADMIN' && selectedIds.size > 0 && (
               <button onClick={() => handleDelete(filteredFacturas.filter(f => selectedIds.has(f.numero_documento)))} disabled={isDeleting} className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-50">
                 {isDeleting ? "Borrando..." : `Borrar (${selectedIds.size})`}
@@ -293,7 +347,6 @@ export default function CatalogoView() {
           <table className="min-w-full text-sm text-left">
             <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
               <tr>
-                {/* 🚨 REGLA RBAC: Checkboxes Exclusivos para ADMIN */}
                 {userRole === 'ADMIN' && (
                   <th className="px-4 py-4 w-12 text-center">
                     <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === filteredFacturas.length} onChange={toggleSelectAll} />
@@ -312,7 +365,6 @@ export default function CatalogoView() {
               {filteredFacturas.map((factura) => (
                 <tr key={factura.PK} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(factura.numero_documento) ? 'bg-indigo-50/30' : ''}`}>
                   
-                  {/* 🚨 REGLA RBAC: Checkboxes de Fila */}
                   {userRole === 'ADMIN' && (
                     <td className="px-4 py-4 text-center">
                       <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.has(factura.numero_documento)} onChange={() => toggleSelectOne(factura.numero_documento)} />
@@ -354,14 +406,11 @@ export default function CatalogoView() {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2">
-                      
-                      {/* 🚨 REGLA RBAC: Botón Eliminar Individual */}
                       {userRole === 'ADMIN' && factura.estado === "PENDIENTE" && (
                         <button onClick={() => handleDelete([factura])} className="text-red-500 hover:text-red-700 font-bold text-xs">
                           Eliminar
                         </button>
                       )}
-
                       <button onClick={() => setFacturaDetails(factura)} className="text-indigo-600 hover:text-indigo-900 font-bold text-xs bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded transition-colors">
                         Ver
                       </button>

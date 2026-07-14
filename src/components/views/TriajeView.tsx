@@ -33,7 +33,11 @@ export default function TriajeView() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
 
-  // 🚨 REGLAS MULTI-TENANT Y RBAC
+  const [searchTerm, setSearchTerm] = useState("");
+  const [fechaInicio, setFechaInicio] = useState("");
+  const [fechaFin, setFechaFin] = useState("");
+  const [sortOrder, setSortOrder] = useState<"DESC" | "ASC">("DESC");
+
   const tenantId = (session?.user as any)?.tenantId || session?.user?.email;
   const userRole = (session?.user as any)?.rol || 'USER';
 
@@ -42,7 +46,6 @@ export default function TriajeView() {
     setIsLoading(true);
     
     Promise.all([
-      // 🚨 Ya no le pasamos tenantId a los vouchers, traemos todos los pendientes
       fetch(`/api/vouchers`).then(res => res.json()),
       fetch(`/api/empresas?tenantId=${encodeURIComponent(tenantId)}`).then(res => res.json())
     ])
@@ -55,16 +58,13 @@ export default function TriajeView() {
         }
 
         if (vouchersData.success) {
-          // 🚨 FILTRO CRUZADO SEGURO: Extraemos los RUCs de las empresas que le pertenecen a este Tenant
           const userRucs = new Set(misEmpresas.map(e => e.ruc));
-          
-          // Solo conservamos los vouchers que pertenezcan a los RUCs autorizados
           const misVouchers = vouchersData.data.filter((v: any) => userRucs.has(v.empresa_emisora_ruc));
 
-          // Ordenar por fecha de registro (más recientes primero)
+          // 🚨 CORREGIDO: Usando fecha_importacion
           const sortedVouchers = misVouchers.sort((a: any, b: any) => {
-            const timeA = a.fecha_registro ? new Date(a.fecha_registro).getTime() : 0;
-            const timeB = b.fecha_registro ? new Date(b.fecha_registro).getTime() : 0;
+            const timeA = a.fecha_importacion ? new Date(a.fecha_importacion).getTime() : 0;
+            const timeB = b.fecha_importacion ? new Date(b.fecha_importacion).getTime() : 0;
             return timeB - timeA;
           });
           setVouchers(sortedVouchers);
@@ -85,9 +85,47 @@ export default function TriajeView() {
     return emp ? emp.nombreOriginal : "Empresa Desconocida";
   };
 
+  const filteredVouchers = vouchers.filter((v) => {
+    const term = searchTerm.toLowerCase();
+    const importeStr = String(v.conciliacion?.importe_pagado || "");
+    const sugInfo = getSugerenciaInfo(v.conciliacion);
+    const clienteSugerido = sugInfo.cliente.toLowerCase();
+    const docSugerido = sugInfo.doc.toLowerCase();
+
+    const matchSearch = !term ||
+      v.fileName?.toLowerCase().includes(term) ||
+      v.empresa_emisora_ruc?.toLowerCase().includes(term) ||
+      getEmpresaNombre(v.empresa_emisora_ruc).toLowerCase().includes(term) ||
+      importeStr.includes(term) ||
+      clienteSugerido.includes(term) ||
+      docSugerido.includes(term);
+
+    let matchFecha = true;
+    if (fechaInicio || fechaFin) {
+      // 🚨 CORREGIDO: Usando fecha_importacion
+      const vDate = v.fecha_importacion ? new Date(v.fecha_importacion).getTime() : 0;
+      if (vDate > 0) {
+        const start = fechaInicio ? new Date(`${fechaInicio}T00:00:00`).getTime() : 0;
+        const end = fechaFin ? new Date(`${fechaFin}T23:59:59`).getTime() : Infinity;
+        matchFecha = vDate >= start && vDate <= end;
+      } else {
+        matchFecha = false; 
+      }
+    }
+
+    return matchSearch && matchFecha;
+  });
+
+  filteredVouchers.sort((a, b) => {
+    // 🚨 CORREGIDO: Usando fecha_importacion
+    const timeA = a.fecha_importacion ? new Date(a.fecha_importacion).getTime() : 0;
+    const timeB = b.fecha_importacion ? new Date(b.fecha_importacion).getTime() : 0;
+    return sortOrder === "DESC" ? timeB - timeA : timeA - timeB;
+  });
+
   const toggleSelectAll = () => {
-    if (selectedIds.size === vouchers.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(vouchers.map(v => v.s3_key)));
+    if (selectedIds.size === filteredVouchers.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(filteredVouchers.map(v => v.s3_key)));
   };
 
   const toggleSelectOne = (id: string) => {
@@ -98,7 +136,6 @@ export default function TriajeView() {
   };
 
   const handleDelete = async (vouchersAEliminar: any[]) => {
-    // Protección RBAC (Frontend)
     if (userRole !== 'ADMIN') {
       alert("Acceso denegado: Solo el Administrador puede eliminar vouchers.");
       return;
@@ -108,7 +145,7 @@ export default function TriajeView() {
 
     setIsDeleting(true);
     try {
-      const payload = vouchersAEliminar.map(v => ({ s3_key: v.s3_key }));
+      const payload = vouchersAEliminar.map(v => ({ s3_key: v.s3_key, PK: v.PK }));
       const res = await fetch("/api/vouchers/eliminar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -176,14 +213,65 @@ export default function TriajeView() {
         </div>
       </div>
 
+      <div className="mb-6 flex flex-col sm:flex-row gap-3 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-center">
+        <div className="relative flex-1 w-full">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          </div>
+          <input
+            type="text"
+            placeholder="Buscar por documento, sugerencia IA, monto (Ej. 150.00)..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg bg-gray-50 focus:bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-colors"
+          />
+        </div>
+
+        <div className="flex items-center bg-gray-50 border border-gray-300 rounded-lg px-3 py-2.5 w-full sm:w-auto">
+          <input
+            type="date"
+            value={fechaInicio}
+            onChange={(e) => setFechaInicio(e.target.value)}
+            title="Fecha Inicial"
+            className="bg-transparent text-sm outline-none text-gray-600 w-full sm:w-[130px]"
+          />
+          <span className="text-gray-400 mx-2">a</span>
+          <input
+            type="date"
+            value={fechaFin}
+            onChange={(e) => setFechaFin(e.target.value)}
+            title="Fecha Final"
+            className="bg-transparent text-sm outline-none text-gray-600 w-full sm:w-[130px]"
+          />
+          {(fechaInicio || fechaFin) && (
+            <button 
+              onClick={() => { setFechaInicio(""); setFechaFin(""); }}
+              className="ml-2 text-gray-400 hover:text-red-500 transition-colors"
+              title="Limpiar fechas"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value as "DESC" | "ASC")}
+          className="border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none w-full sm:w-[200px] bg-white font-medium text-gray-700"
+        >
+          <option value="DESC">Más recientes</option>
+          <option value="ASC">Más antiguos</option>
+        </select>
+      </div>
+
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         {isLoading ? (
           <div className="flex justify-center items-center h-48"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>
-        ) : vouchers.length === 0 ? (
+        ) : filteredVouchers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-gray-500 text-center">
             <svg className="w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
             <p className="text-xl font-medium text-gray-800">La bandeja está limpia</p>
-            <p className="mt-1">No hay comprobantes pendientes de revisión.</p>
+            <p className="mt-1">No hay comprobantes pendientes que coincidan con la búsqueda.</p>
           </div>
         ) : (
           <table className="min-w-full text-sm text-left">
@@ -191,7 +279,7 @@ export default function TriajeView() {
               <tr>
                 {userRole === 'ADMIN' && (
                   <th className="p-4 w-12 text-center">
-                    <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === vouchers.length} onChange={toggleSelectAll} />
+                    <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" checked={selectedIds.size > 0 && selectedIds.size === filteredVouchers.length} onChange={toggleSelectAll} />
                   </th>
                 )}
                 <th className="p-4 font-semibold uppercase tracking-wider text-xs">Voucher Depositado</th>
@@ -202,7 +290,7 @@ export default function TriajeView() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {vouchers.map(v => {
+              {filteredVouchers.map(v => {
                 const sugInfo = getSugerenciaInfo(v.conciliacion);
                 
                 return (
@@ -215,6 +303,10 @@ export default function TriajeView() {
                     <td className="p-4">
                       <p className="font-bold text-gray-800 text-xs truncate max-w-[180px]" title={v.fileName}>{v.fileName}</p>
                       <p className="text-[10px] text-gray-500 font-mono mt-0.5">Monto: {v.conciliacion?.moneda === 'USD' ? '$' : 'S/'} {Number(v.conciliacion?.importe_pagado || 0).toFixed(2)}</p>
+                      {/* 🚨 CORREGIDO: Usando fecha_importacion para mostrar en la interfaz */}
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        {v.fecha_importacion ? new Date(v.fecha_importacion).toLocaleString('es-PE') : 'Sin fecha'}
+                      </p>
                     </td>
                     <td className="p-4">
                       <p className="font-bold text-gray-800 text-xs truncate max-w-[150px] uppercase" title={getEmpresaNombre(v.empresa_emisora_ruc)}>{getEmpresaNombre(v.empresa_emisora_ruc)}</p>
